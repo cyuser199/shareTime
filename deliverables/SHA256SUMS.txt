@@ -1,0 +1,5 @@
+4290d512225df2a82161696a062e74c254197a15e2dd54159cf9c0c70aafad88  ShareTime-0.1.0-debug.apk
+c139f710e722ec3d49c602184c9170428fa2355c7caab5bc239a20456366dcfd  ShareTime-0.1.1-debug.apk
+bc7e3f30fdfdc0d38c0e1edb1ad22eefae14c260a2e79b7e19948f8e9a5a4849  ShareTime-0.2.0-debug.apk
+ab957d152af34daad2f45db27e689718eadf23ee988b6e5ca3f97999a428d92d  ShareTime-0.3.0-debug.apk
+155bf3b0bea24c26fb8d854da17a8f41413a032d2479cc1871a09e4e35ae0134  ShareTime-0.3.1-debug.apk

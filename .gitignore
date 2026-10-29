@@ -1,0 +1,24 @@
+.gradle/
+**/build/
+local.properties
+*.jks
+*.keystore
+*.pem
+!android/app/src/main/res/raw/sharetime_ca.pem
+server/.venv/
+server/data/
+__pycache__/
+.pytest_cache/
+*.pyc
+tools/remote.local.json
+
+# Local device evidence and generated deliverables
+docs/device-test-*/
+*.log
+deliverables/*.apk
+deployment-local/
+.env
+.env.*
+*.credential.xml
+*.ppk
+*.key

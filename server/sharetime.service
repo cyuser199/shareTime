@@ -1,0 +1,28 @@
+[Unit]
+Description=ShareTime encrypted in-memory relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sharetime
+Group=sharetime
+WorkingDirectory=/opt/sharetime/current
+Environment=SHARETIME_DATA=/opt/sharetime/data
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/sharetime/current/venv/bin/uvicorn app:create_app --factory --host 0.0.0.0 --port 8443 --workers 1 --ssl-certfile /opt/sharetime/tls/server.crt --ssl-keyfile /opt/sharetime/tls/server.key --ws-max-size 4502048 --ws-max-queue 2 --ws-per-message-deflate false --no-access-log --log-level warning
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sharetime/data
+LimitCORE=0
+MemorySwapMax=0
+MemoryMax=1G
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

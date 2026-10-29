@@ -1,0 +1,7 @@
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false"><trust-anchors><certificates src="system" /></trust-anchors></base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">192.168.1.191</domain>
+        <trust-anchors><certificates src="@raw/sharetime_ca" /></trust-anchors>
+    </domain-config>
+</network-security-config>
