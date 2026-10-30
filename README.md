@@ -9,7 +9,7 @@
 - [下载 0.5.0 APK](https://github.com/cyuser199/shareTime/releases/download/v0.5.0/ShareTime-0.5.0-debug.apk)
 - [Release 说明与 SHA-256 校验文件](https://github.com/cyuser199/shareTime/releases/tag/v0.5.0)
 
-安装包使用开发签名。已安装此前同签名测试版的手机可以覆盖升级。联想 Android 11 已验证保留配对；本轮 Android 9 模拟器出现原身份文件缺失，原因尚未确定，双机完整记录验证未完成。卸载或清除应用数据会失去本机记录。
+安装包使用开发签名。已安装此前同签名测试版的手机可以覆盖升级，保留配对和本机历史。联想 Android 11 已验证保留配对；模拟器回到注册页已由用户确认为手动清除应用数据所致。卸载或清除应用数据会失去本机记录。
 
 ## 当前服务器
 
