@@ -18,7 +18,7 @@ $gradle = 'C:\environment\gradle\gradle-9.5.0\bin\gradle.bat'
 if (!(Test-Path $gradle)) { throw 'Run tools/prepare_android_env.py first.' }
 & $gradle -p $androidRoot assembleDebug testDebugUnitTest lintDebug --console=plain --no-daemon "-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8 -Djava.io.tmpdir=$($env:TEMP)" 2>&1 | Tee-Object -FilePath (Join-Path $runRoot 'build.log')
 if ($LASTEXITCODE -ne 0) { throw "Android checks failed: $LASTEXITCODE" }
-$appVersion = [regex]::Match((Get-Content -LiteralPath "$workspaceRoot\android\app\build.gradle.kts" -Raw), 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
+$appVersion = [regex]::Match((Get-Content -LiteralPath "$androidRoot\app\build.gradle.kts" -Raw), 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
 if (!$appVersion) { throw 'Missing application version.' }
 Copy-Item -LiteralPath "$androidRoot\app\build\outputs\apk\debug\app-debug.apk" -Destination "$outputRoot\ShareTime-$appVersion-debug.apk" -Force
 Write-Host "APK: $outputRoot\ShareTime-$appVersion-debug.apk"

@@ -138,7 +138,7 @@ import java.util.Locale
 @Composable private fun JournalImageCard(bytes: ByteArray, label: String, onClick: () -> Unit) {
     Surface(onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surface.copy(alpha = .90f), tonalElevation = 1.dp) {
-        Box(Modifier.fillMaxWidth().aspectRatio(1.55f)) {
+        Box(Modifier.fillMaxWidth().height(((androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp - 240) / 2).coerceIn(140, 480).dp)) {
             JournalPicture(bytes, Modifier.fillMaxSize())
             Surface(Modifier.align(Alignment.TopStart).padding(10.dp), shape = CircleShape,
                 color = MaterialTheme.colorScheme.surface.copy(alpha = .92f), contentColor = MaterialTheme.colorScheme.onSurface) {

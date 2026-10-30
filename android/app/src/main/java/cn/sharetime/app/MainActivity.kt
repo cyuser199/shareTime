@@ -347,7 +347,10 @@ class MainActivity : ComponentActivity() {
                             OutlinedButton(onClick = { openSystemSettings(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) }) { Text("应用后台 / 自启动设置") }
                             Text("建议允许后台运行和自启动，并在系统通知中允许横幅与锁屏通知；不同品牌入口可能不同。强制停止、断网和深度休眠仍会影响送达。", style = MaterialTheme.typography.bodySmall)
                             ServerAddress(state.url, onChange = { store.switchServer(it) })
-                            Text(if (state.connected) "服务器已连接" else "连接已断开，正在尝试重连")
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(if (state.connected) "服务器已连接" else "连接已断开，正在尝试重连", Modifier.weight(1f))
+                                TextButton(onClick = { store.reconnectNow() }) { Text("手动重连") }
+                            }
                             if (state.registered) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Column(Modifier.weight(1f)) { Text("保持接收邀请"); Text("显示持续通知；系统省电仍可能影响送达", style = MaterialTheme.typography.bodySmall) }

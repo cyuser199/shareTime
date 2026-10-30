@@ -89,9 +89,13 @@ class Store(private val context: Context) {
     ))
     val state = mutable.asStateFlow()
     private val http = OkHttpClient.Builder().connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS).pingInterval(25, TimeUnit.SECONDS).build()
+        .readTimeout(20, TimeUnit.SECONDS).build()
     @Volatile private var socket: WebSocket? = null
     private var reconnect: Job? = null
+    private var heartbeat: Job? = null
+    @Volatile private var lastServerReply = 0L
+    private val connectivity = context.getSystemService(android.net.ConnectivityManager::class.java)
+    private var network = connectivity.activeNetwork
     private var backgroundClose: Job? = null
     @Volatile private var wanted = false
     @Volatile private var foreground = false
@@ -106,9 +110,10 @@ class Store(private val context: Context) {
             catch (_: Exception) { message("本机记录暂时无法读取，请保留应用数据后重试") }
         }
         File(context.cacheDir, "capture").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
-        scope.launch {
-            while (true) { delay(25_000); if (state.value.connected) socket?.send("{\"type\":\"ping\"}") }
-        }
+        connectivity.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(available: android.net.Network) = networkAvailable(available)
+            override fun onLost(lost: android.net.Network) = networkLost(lost)
+        })
     }
     fun message(text: String) { mutable.update { it.copy(message = text) } }
     fun clearMessage() { message("") }
@@ -177,6 +182,7 @@ class Store(private val context: Context) {
                 }
                 mutable.update { it.copy(url = normalized, name = name.trim(), registered = true) }
                 connect()
+                ReceiveService.restore(context)
             } catch (e: Exception) { message(e.message?.take(100) ?: "连接失败，请检查服务器地址与网络") }
             finally { mutable.update { it.copy(busy = false) } }
         }
@@ -199,27 +205,51 @@ class Store(private val context: Context) {
         mutable.update { it.copy(keepReceiving = enabled) }
         if (enabled) connect() else if (!foreground && state.value.round.isBlank()) disconnect()
     }
-    @Synchronized fun networkChanged() {
+    @Synchronized private fun networkAvailable(available: android.net.Network) {
+        if (network == available) return
+        network = available
+        retries = 0
         if (!wanted) return
+        heartbeat?.cancel()
         socket?.cancel(); socket = null
         mutable.update { it.copy(connected = false, online = false) }
         connect()
     }
+    @Synchronized private fun networkLost(lost: android.net.Network) {
+        if (network != lost) return
+        network = null
+        reconnect?.cancel()
+        heartbeat?.cancel()
+        socket?.cancel(); socket = null
+        mutable.update { it.copy(connected = false, online = false, busy = false) }
+    }
     @Synchronized fun connect() {
         if (!state.value.registered || !Agreement.accepted(context)) return
         wanted = true
-        if (socket != null) return
+        if (socket != null || network == null) return
         reconnect?.cancel()
         val url = state.value.url.replaceFirst("https://", "wss://") + "/connect"
         socket = http.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
-                retries = 0
+                if (socket !== ws) return
+                heartbeat?.cancel()
+                lastServerReply = android.os.SystemClock.elapsedRealtime()
+                heartbeat = scope.launch {
+                    while (isActive && socket === ws) {
+                        delay(1_000)
+                        if (android.os.SystemClock.elapsedRealtime() - lastServerReply > 10_000) {
+                            ws.cancel(); lost(ws); break
+                        }
+                        if (!ws.send("{\"type\":\"ping\"}")) { lost(ws); break }
+                    }
+                }
                 ws.send(JSONObject().put("token", credentials.getString("token"))
                     .put("certificate", credentials.optString("certificate").ifBlank { null })
                     .put("pairingProtocol", 2).put("reservation", credentials.optString("reservation").ifBlank { null }).toString())
             }
             override fun onMessage(ws: WebSocket, text: String) {
                 if (socket !== ws) return
+                lastServerReply = android.os.SystemClock.elapsedRealtime()
                 try { handle(JSONObject(text)) }
                 catch (_: Exception) { message("消息处理失败，请结束本轮后重试") }
             }
@@ -231,11 +261,12 @@ class Store(private val context: Context) {
     @Synchronized private fun lost(ws: WebSocket) {
         if (socket !== ws) return
         socket = null
+        heartbeat?.cancel()
         mutable.update { it.copy(connected = false, online = false, busy = false) }
-        if (wanted) {
+        if (wanted && network != null) {
             reconnect?.cancel()
             reconnect = scope.launch {
-                delay((1000L shl retries.coerceAtMost(5)).coerceAtMost(30_000))
+                delay(BackgroundPolicy.retryDelay(retries))
                 retries++
                 connect()
             }
@@ -243,6 +274,7 @@ class Store(private val context: Context) {
     }
     @Synchronized fun disconnect() {
         wanted = false
+        heartbeat?.cancel()
         reconnect?.cancel()
         socket?.close(1000, null)
         socket = null
@@ -251,6 +283,16 @@ class Store(private val context: Context) {
     fun command(type: String, extra: JSONObject = JSONObject()) {
         val sent = socket?.send(extra.put("type", type).toString()) ?: false
         if (!sent) message("尚未连接服务器，请检查网络后重试")
+    }
+    @Synchronized fun reconnectNow() {
+        reconnect?.cancel()
+        heartbeat?.cancel()
+        socket?.cancel(); socket = null
+        retries = 0
+        network = connectivity.activeNetwork
+        mutable.update { it.copy(connected = false, online = false, busy = false) }
+        connect()
+        if (network == null) message("当前没有可用网络，恢复后会自动连接")
     }
     fun invite() { command("invite") }
     fun respond(accept: Boolean) {
@@ -288,6 +330,7 @@ class Store(private val context: Context) {
     private fun handle(event: JSONObject) {
         when (event.getString("type")) {
             "state" -> {
+                retries = 0
                 if (event.optBoolean("paired") && credentials.optString("certificate").isBlank()) {
                     // A peer reconnecting with an old certificate cannot undo our local unpair.
                     command("unpair")

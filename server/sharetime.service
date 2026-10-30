@@ -10,7 +10,7 @@ Group=sharetime
 WorkingDirectory=/opt/sharetime/current
 Environment=SHARETIME_DATA=/opt/sharetime/data
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/sharetime/current/venv/bin/uvicorn app:create_app --factory --host 0.0.0.0 --port 8443 --workers 1 --ssl-certfile /opt/sharetime/tls/server.crt --ssl-keyfile /opt/sharetime/tls/server.key --ws-max-size 4502048 --ws-max-queue 2 --ws-per-message-deflate false --no-access-log --log-level warning
+ExecStart=/opt/sharetime/current/venv/bin/uvicorn app:create_app --factory --host 0.0.0.0 --port 8443 --workers 1 --ssl-certfile /opt/sharetime/tls/server.crt --ssl-keyfile /opt/sharetime/tls/server.key --ws-ping-interval 60 --ws-ping-timeout 30 --ws-max-size 4502048 --ws-max-queue 2 --ws-per-message-deflate false --no-access-log --log-level warning
 Restart=on-failure
 RestartSec=3
 UMask=0077

@@ -36,6 +36,7 @@ object Notices {
         channels(context)
         return NotificationCompat.Builder(context, if (ongoing) "connection" else "invitations")
             .setSmallIcon(R.drawable.ic_notification).setContentTitle("此刻").setContentText(text)
+            .setSilent(ongoing).setOnlyAlertOnce(ongoing)
             .setContentIntent(open(context)).setOngoing(ongoing).setAutoCancel(!ongoing)
             .setPriority(if (ongoing) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_HIGH)
             .setCategory(if (ongoing) NotificationCompat.CATEGORY_SERVICE else NotificationCompat.CATEGORY_MESSAGE)
@@ -50,7 +51,7 @@ object Notices {
 
 class ReceiveService : Service() {
     companion object {
-        fun enabled(context: Context) = context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("receive", false)
+        fun enabled(context: Context) = context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("receive", true)
         fun setEnabled(context: Context, enabled: Boolean) {
             context.getSharedPreferences("preferences", Context.MODE_PRIVATE).edit().putBoolean("receive", enabled).apply()
             if (enabled) restore(context) else {
@@ -59,21 +60,11 @@ class ReceiveService : Service() {
             }
         }
         fun restore(context: Context) {
-            if (enabled(context) && Agreement.accepted(context)) {
+            if (enabled(context) && Agreement.accepted(context) && (context.applicationContext as ShareTimeApp).store.state.value.registered) {
                 try { ContextCompat.startForegroundService(context, Intent(context, ReceiveService::class.java)) }
                 catch (_: IllegalStateException) { /* System may defer background starts until the next foreground visit. */ }
             }
         }
-    }
-    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
-    override fun onCreate() {
-        super.onCreate()
-        val manager = getSystemService(android.net.ConnectivityManager::class.java)
-        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) { (application as ShareTimeApp).store.networkChanged() }
-        }
-        networkCallback = callback
-        manager.registerDefaultNetworkCallback(callback)
     }
     override fun onBind(intent: Intent?) = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -84,7 +75,6 @@ class ReceiveService : Service() {
         return START_STICKY
     }
     override fun onDestroy() {
-        networkCallback?.let { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(it) }
         (application as ShareTimeApp).store.keepReceiving(false)
         super.onDestroy()
     }
