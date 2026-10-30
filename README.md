@@ -41,7 +41,7 @@
 
 同意协议后，首次进入显示通知与可选小窗权限引导，拍照、截图及保存按需授权。启动连接后会自动检查服务器更新，也可在设置中点击“检查更新”。下载由浏览器完成，安装需按系统提示确认，覆盖安装保留本机数据。
 
-发布接口和本轮验证范围见 [0.4.0 说明](docs/release-0.4.0.md)。本轮 ADB 未连接手机，新功能尚待真机验证。
+发布接口和本轮验证范围见 [0.4.0 说明](docs/release-0.4.0.md)。0.4.0 已补充 Android 11、16 双机验证，结果与未覆盖项见 [真机补测记录](docs/device-validation-0.4.0.md)。
 
 ## 后台通知
 
@@ -122,7 +122,8 @@ python tools/smoke_server.py
 Android 8、17 尚未完成对应版本真机验证。长时间待机、开机恢复及不同省电策略仍需进一步测试。
 
 - [云端迁移与当前版本验证](docs/cloud-migration.md)
-- [双机联调记录](docs/device-validation.md)
+- [0.4.0 双机补测记录](docs/device-validation-0.4.0.md)
+- [此前版本双机联调记录](docs/device-validation.md)
 - [0.3.0 功能说明](docs/release-0.3.0.md)
 - [后续测试计划](docs/device-test-plan.md)
 
