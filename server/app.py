@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from urllib.parse import urlencode
 from pydantic import BaseModel, Field
 from pairing import PairingRegistry
+from groups import FriendGroups
 
 class ActionError(ValueError):
     """A safe, user-facing operation failure."""
@@ -56,6 +57,7 @@ class Relay:
         self.rate = {}
         self.lock = asyncio.Lock()
         self.registry = PairingRegistry(self)
+        self.friends = FriendGroups(self)
 
     def sign(self, obj):
         body = b64(json.dumps(obj, separators=(',', ':'), ensure_ascii=False).encode())
@@ -110,6 +112,7 @@ class Relay:
 
     async def sweep(self):
         self.registry.clean()
+        await self.friends.sweep()
         now = time.monotonic()
         self.codes = {k: v for k, v in self.codes.items() if v['expires'] > now}
         self.pending = {k: v for k, v in self.pending.items() if v['expires'] > now}
@@ -362,7 +365,7 @@ def create_app(directory=None):
 
     @app.get('/stats')
     async def stats():
-        return {**relay.stats, 'online_devices': len(relay.connections)}
+        return {**relay.stats, 'online_devices': len(set(relay.connections) | set(relay.friends.connections))}
 
     class Registration(BaseModel):
         name: str = Field(min_length=1, max_length=24)
@@ -397,6 +400,9 @@ def create_app(directory=None):
                 raise ValueError('Invalid authentication')
             device = relay.verify(auth.get('token', ''), 'device')
             uid = device['id']
+            if auth.get('mode') == 'friends':
+                await relay.friends.connect(ws, device)
+                return
             async with relay.lock:
                 await relay.sweep()
                 if len(relay.connections) >= 200 and uid not in relay.connections:

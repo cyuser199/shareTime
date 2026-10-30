@@ -120,7 +120,7 @@ class MainActivity : ComponentActivity() {
     private fun readIncomingLink() {
         val link = incomingLink ?: return
         val state = store.state.value
-        if (!state.registered || !state.connected) return
+        if (!state.registered || !state.connected || state.mode == "friends") return
         incomingLink = null
         if (link.scheme != "sharetime" || link.host != "pair") return
         val code = link.getQueryParameter("code").orEmpty()
@@ -139,6 +139,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun readPairClipboard(manual: Boolean = false) {
+        if (store.state.value.mode == "friends") return
         val state = store.state.value
         if (!hasWindowFocus() || !state.registered || state.paired) return
         try {
@@ -244,7 +245,7 @@ class MainActivity : ComponentActivity() {
                     Column(Modifier.safeDrawingPadding().padding(24.dp)) {
                         Text("欢迎使用此刻", style = MaterialTheme.typography.headlineMedium)
                         Text(Agreement.text, Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(vertical = 16.dp))
-                        Button(onClick = { Agreement.accept(this@MainActivity); agreed = true; store.onForeground() }, Modifier.fillMaxWidth()) { Text("已阅读并同意，开始使用") }
+                        Button(onClick = { Agreement.accept(this@MainActivity); agreed = true; store.onForeground(); ReceiveService.restore(this@MainActivity) }, Modifier.fillMaxWidth()) { Text("已阅读并同意，开始使用") }
                         TextButton(onClick = { finish() }, Modifier.fillMaxWidth()) { Text("不同意，退出") }
                     }
                 }
@@ -255,6 +256,8 @@ class MainActivity : ComponentActivity() {
                 confirmButton = { TextButton(onClick = { showAgreement = false }) { Text("关闭") } })
             val prefs = remember { getSharedPreferences("preferences", MODE_PRIVATE) }
             var frameName by remember { mutableStateOf(prefs.getString("display_frame", "WHITE") ?: "WHITE") }
+            var modeChooser by rememberSaveable { mutableStateOf(true) }
+            if (modeChooser) ModeChooser(state.mode, onChoose = { store.switchMode(it); modeChooser = false }, onDismiss = { modeChooser = false })
             var frameSettings by remember { mutableStateOf(false) }
             var permissionGuide by rememberSaveable { mutableStateOf(!prefs.getBoolean("permissions_guided", false)) }
             LaunchedEffect(state.connected, permissionGuide) {
@@ -285,9 +288,18 @@ class MainActivity : ComponentActivity() {
             var showCalendar by rememberSaveable { mutableStateOf(false) }
             var showCelebration by rememberSaveable { mutableStateOf(false) }
             var deleteEntry by rememberSaveable { mutableStateOf(false) }
-            var detail by remember(selectedEntry) { mutableStateOf<JournalRecord?>(null) }
+            var detailRetry by remember { mutableIntStateOf(0) }
+            var detailLoading by remember { mutableStateOf(false) }
+            val detail by produceState<JournalRecord?>(null, selectedEntry, detailRetry) {
+                value = null
+                val id = selectedEntry
+                detailLoading = id != null
+                try {
+                    if (id != null) value = kotlinx.coroutines.withTimeoutOrNull(12_000) { store.loadEntry(id) }
+                } finally { detailLoading = false }
+            }
             val snackbar = remember { SnackbarHostState() }
-            LaunchedEffect(selectedEntry) { selectedEntry?.let { detail = store.loadEntry(it) } }
+            LaunchedEffect(state.mode) { selectedEntry = null; settings = false; historyBrowsing = false }
             LaunchedEffect(state.newEntryId) {
                 if (state.newEntryId.isNotBlank()) {
                     state.history.firstOrNull { it.id == state.newEntryId }?.let { selectedDay = it.day }
@@ -340,6 +352,7 @@ class MainActivity : ComponentActivity() {
                         .padding(horizontal = if (selectedEntry != null) 12.dp else 24.dp, vertical = if (selectedEntry != null) 8.dp else 20.dp),
                         verticalArrangement = Arrangement.spacedBy(if (selectedEntry != null) 10.dp else 18.dp)) {
                         if (settings) {
+                            TextButton(onClick = { modeChooser = true }) { Text(if (state.mode == "friends") "好友模式 · 切换模式" else "双人模式 · 切换模式") }
                             Text("连接与隐私", style = MaterialTheme.typography.headlineSmall)
                             Text("本软件由CY个人开发")
                             Text("版本 ${BuildConfig.VERSION_NAME}")
@@ -376,17 +389,28 @@ class MainActivity : ComponentActivity() {
                             OutlinedButton(onClick = { backgroundPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !state.busy) { Text("选择背景图片") }
                             if (state.background != null) TextButton(onClick = { store.resetBackground() }) { Text("恢复默认背景") }
                             Text("背景只在这台手机显示，图片会自动添加柔和遮罩，保证文字清晰。", style = MaterialTheme.typography.bodySmall)
-                            Text("记录完成后，两张图片会加密保存在本机时间轴，支持按日历查看与删除。服务器仅在内存中转发，双方收到后清理中转内容；未完成的记录最多保留 10 分钟。")
+                            Text("记录完成后，参与者的图片会加密保存在本机时间轴，支持按日历查看与删除。服务器仅在内存中转发，双方收到后清理中转内容；未完成的记录最多保留 10 分钟。")
                             Text("服务器保存统计、服务密钥，以及最多 3 天的待配对登记和申请。配对成功确认后清理相关信息。图片仍只在内存中转。", style = MaterialTheme.typography.bodySmall)
-                            if (state.paired) OutlinedButton(onClick = { confirmUnpair = true }) { Text("解除配对") }
+                            if (state.paired) OutlinedButton(onClick = { confirmUnpair = true }) { Text(if (state.mode == "friends") "退出好友群组" else "解除配对") }
                             else if (state.registered) OutlinedButton(onClick = { ReceiveService.setEnabled(this@MainActivity, false); store.reset(); settings = false }) { Text("更换服务器 / 重置本机身份") }
                         } else if (selectedEntry != null) {
-                            JournalDetail(detail, viewportHeight = detailViewportHeight, frameName = frameName, onImage = { expandedImage = it })
+                            if (!detailLoading && detail == null) {
+                                Text("这条记录暂时无法读取", style = MaterialTheme.typography.titleMedium)
+                                Text("记录仍保存在本机，可重试读取。", style = MaterialTheme.typography.bodyMedium)
+                                OutlinedButton(onClick = { detailRetry++ }) { Text("重试读取") }
+                            } else JournalDetail(detail, viewportHeight = detailViewportHeight, frameName = frameName, onImage = { expandedImage = it })
                         } else if (historyBrowsing && state.round.isBlank()) {
                             JournalHome(state, LocalDate.parse(selectedDay), onDate = { showCalendar = true }, onToday = { selectedDay = LocalDate.now().toString() },
                                 onOpen = { selectedEntry = it }, onInvite = { requestNotifications(); store.invite() })
                         } else if (!state.registered) {
                             Registration(state)
+                        } else if (state.mode == "friends" && state.round.isBlank()) {
+                            FriendPanel(state, store) { code ->
+                                (getSystemService(ClipboardManager::class.java)).setPrimaryClip(ClipData.newPlainText("好友群组码", code))
+                                store.message("已复制好友群组码")
+                            }
+                            if (state.paired) JournalHome(state, LocalDate.parse(selectedDay), onDate = { showCalendar = true }, onToday = { selectedDay = LocalDate.now().toString() },
+                                onOpen = { selectedEntry = it }, onInvite = { requestNotifications(); store.invite() })
                         } else if (!state.paired) {
                             Pairing(state)
                         } else if (state.round.isBlank()) {
@@ -406,7 +430,7 @@ class MainActivity : ComponentActivity() {
             }, onDismiss = { showCalendar = false })
             if (showCelebration) FirstRecordCelebration(onDone = { showCelebration = false })
             if (deleteEntry) AlertDialog(onDismissRequest = { deleteEntry = false }, title = { Text("删除这条本机记录？") },
-                text = { Text("仅删除这台手机时间轴中的两张图片，不影响好友的记录和已保存到相册的副本。") },
+                text = { Text("仅删除这台手机这次记录的全部图片，不影响好友的记录和已保存到相册的副本。") },
                 confirmButton = { TextButton(onClick = { selectedEntry?.let(store::deleteEntry); selectedEntry = null; deleteEntry = false }) { Text("删除记录") } },
                 dismissButton = { TextButton(onClick = { deleteEntry = false }) { Text("取消") } })
             if (state.pairRequest.isNotBlank()) AlertDialog(onDismissRequest = { store.confirmPair(false) },
@@ -417,9 +441,9 @@ class MainActivity : ComponentActivity() {
                 text = { Text("未完成的临时图片将被清理。已存入时间轴和相册的记录会保留。") },
                 confirmButton = { TextButton(onClick = { store.endRound(); confirmEnd = false }) { Text("结束并清理") } },
                 dismissButton = { TextButton(onClick = { confirmEnd = false }) { Text("继续记录") } })
-            if (confirmUnpair) AlertDialog(onDismissRequest = { confirmUnpair = false }, title = { Text("解除与好友的配对？") },
-                text = { Text("当前记录也会结束。再次连接需要重新配对。") },
-                confirmButton = { TextButton(onClick = { store.unpair(); confirmUnpair = false }) { Text("解除配对") } },
+            if (confirmUnpair) AlertDialog(onDismissRequest = { confirmUnpair = false }, title = { Text(if (state.mode == "friends") "退出好友群组？" else "解除与好友的配对？") },
+                text = { Text(if (state.mode == "friends") "当前群组记录也会结束，双人配对和本机历史保留。再次加入需要群组码。" else "当前记录也会结束。再次连接需要重新配对。") },
+                confirmButton = { TextButton(onClick = { store.unpair(); confirmUnpair = false }) { Text(if (state.mode == "friends") "退出群组" else "解除配对") } },
                 dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("取消") } })
             if (frameSettings) DisplayFrameSettings(frameName, onSelect = {
                 frameName = it; prefs.edit().putString("display_frame", it).apply()
@@ -515,6 +539,7 @@ class MainActivity : ComponentActivity() {
     }
     @Composable private fun Round(state: UiState, onImage: (ByteArray) -> Unit, onEnd: () -> Unit) {
         val awaiting = state.phase == "waiting"
+        if (state.mode == "friends" && !state.joinedRound && state.phase != "complete") { FriendWaiting(state, store); return }
         val incoming = awaiting && !state.initiator
         Text(if (state.phase == "complete") "我们的此刻" else if (incoming) "一起记录此刻？" else "记录此刻", style = MaterialTheme.typography.headlineLarge)
         Text(when { state.phase == "complete" -> "这一刻，我们都在。"; incoming -> "${state.peerName} 发来邀请，由你决定是否加入。"; awaiting -> if (state.online) "等待 ${state.peerName} 同意，你可以先准备图片。" else "好友暂未在线，正在等待对方连接。你可以先准备图片，邀请最多等待 24 小时。"; else -> "拍张照片，或截下当前的画面。" })
@@ -534,12 +559,12 @@ class MainActivity : ComponentActivity() {
                 TextButton(onClick = { pickerRound = state.round; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !state.busy) { Text("选择手机自带截图 / 图片") }
             }
             state.preview?.let { bytes -> Picture(bytes, Modifier.fillMaxWidth().height(260.dp).clickable { onImage(bytes) }) }
-            Button(onClick = { store.submit() }, enabled = state.connected && !awaiting && !state.submitted && !state.busy && state.preview != null,
+            Button(onClick = { store.submit() }, enabled = state.connected && !awaiting && !state.submitted && !state.busy && state.preview != null && (state.mode != "friends" || state.participants.size >= 2),
                 modifier = Modifier.fillMaxWidth()) { Text(when { state.submitted -> "已提交，等待好友"; state.busy -> "正在处理…"; awaiting -> "对方同意后可提交"; else -> "确认提交" }) }
             Text(if (state.peerSubmitted) "好友已提交" else "好友尚未提交", style = MaterialTheme.typography.bodySmall)
-            Text("双方均提交后，才会互相展示。", style = MaterialTheme.typography.bodySmall)
+            Text(if (state.mode == "friends") if (state.rosterLocked) "本轮 ${state.participants.size} 人，全部提交后一起展示。" else "已加入 ${state.participants.size} 人，可先准备图片。首次提交后停止加入，至少两人参加。" else "双方均提交后，才会互相展示。", style = MaterialTheme.typography.bodySmall)
         } else {
-            OutlinedButton(onClick = { store.retryArchive() }, enabled = state.received != null) { Text("重试保存到时间轴") }
+            OutlinedButton(onClick = { store.retryArchive() }, enabled = state.received != null || (state.mode == "friends" && state.connected)) { Text("重试保存到时间轴") }
             Text("我的此刻", style = MaterialTheme.typography.titleMedium)
             state.preview?.let { bytes ->
                 Picture(bytes, Modifier.fillMaxWidth().height(280.dp).clickable { onImage(bytes) })

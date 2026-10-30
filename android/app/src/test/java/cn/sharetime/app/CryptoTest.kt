@@ -4,6 +4,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CryptoTest {
+    @Test fun groupCopiesCanOnlyBeDecryptedByTheirRecipient() {
+        val people = List(5) { Crypto.generate() }
+        val data = "group image".toByteArray()
+        for (sender in people.indices) for (recipient in people.indices.filter { it != sender }) {
+            val body = Crypto.encrypt(data, Crypto.privateKey(people[sender].first), people[recipient].second, "group-round")
+            assertArrayEquals(data, Crypto.decrypt(body, Crypto.privateKey(people[recipient].first), people[sender].second, "group-round"))
+            val stranger = people.indices.first { it != sender && it != recipient }
+            try {
+                Crypto.decrypt(body, Crypto.privateKey(people[stranger].first), people[sender].second, "group-round")
+                fail("different recipient decrypted image")
+            } catch (_: javax.crypto.AEADBadTagException) { }
+        }
+    }
     @Test fun bothDevicesDecryptWithFreshNonces() {
         val a = Crypto.generate(); val b = Crypto.generate()
         val data = "a captured moment".toByteArray()

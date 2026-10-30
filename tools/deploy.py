@@ -40,14 +40,14 @@ def main():
     try:
         run("set -eu\napt-get update -qq\nDEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv openssl\nid sharetime >/dev/null 2>&1 || useradd --system --home /opt/sharetime --shell /usr/sbin/nologin sharetime\ninstall -d -m 755 " + release + "\ninstall -d -o sharetime -g sharetime -m 700 /opt/sharetime/data\ninstall -d -m 750 -g sharetime /opt/sharetime/tls")
         with ssh.open_sftp() as sftp:
-            for name in ['app.py', 'pairing.py', 'requirements.txt']:
+            for name in ['app.py', 'pairing.py', 'groups.py', 'requirements.txt']:
                 sftp.put(str(ROOT / 'server' / name), staging + '/' + name)
             sftp.put(str(ROOT / 'server' / 'sharetime.service'), staging + '/sharetime.service')
             if args.wheels:
                 sftp.mkdir(staging + '/wheels')
                 for wheel in args.wheels.glob('*.whl'):
                     sftp.put(str(wheel), staging + '/wheels/' + wheel.name)
-        run('install -m 644 ' + staging + '/app.py ' + staging + '/pairing.py ' + staging + '/requirements.txt ' + release)
+        run('install -m 644 ' + staging + '/app.py ' + staging + '/pairing.py ' + staging + '/groups.py ' + staging + '/requirements.txt ' + release)
         run("""set -eu
 if [ ! -f /opt/sharetime/tls/ca.crt ]; then
  openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 3650 -keyout /opt/sharetime/tls/ca.key -out /opt/sharetime/tls/ca.crt -subj '/CN=ShareTime Local CA' -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign'

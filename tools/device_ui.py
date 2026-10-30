@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 import xml.etree.ElementTree as ET
 
 SERIAL = os.environ.get('SHARETIME_DEVICE', 'fd6e1506')
@@ -18,8 +19,10 @@ def adb(*args):
 
 
 def tree():
-    adb('shell', 'uiautomator', 'dump', '/sdcard/sharetime-ui.xml')
-    return adb('exec-out', 'cat', '/sdcard/sharetime-ui.xml')
+    remote = '/sdcard/sharetime-ui-' + uuid.uuid4().hex + '.xml'
+    adb('shell', 'uiautomator', 'dump', remote)
+    # A failed dump must never fall back to yesterday's hierarchy.
+    return adb('exec-out', 'cat', remote)
 
 
 def tap(text):

@@ -10,8 +10,8 @@ android {
         applicationId = "cn.sharetime.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 14
-        versionName = "0.6.3"
+        versionCode = 17
+        versionName = "0.7.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }

@@ -60,7 +60,7 @@ import java.util.Locale
 @Composable fun JournalHome(state: UiState, date: LocalDate, onDate: () -> Unit, onToday: () -> Unit,
                              onOpen: (String) -> Unit, onInvite: () -> Unit) {
     val today = LocalDate.now()
-    val entries = state.history.filter { it.day == date.toString() }.sortedBy { it.time }
+    val entries = state.history.filter { it.day == date.toString() && it.mode == state.mode }.sortedBy { it.time }
     if (state.paired) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -73,8 +73,10 @@ import java.util.Locale
             }
         }
         Spacer(Modifier.height(4.dp))
+        if (state.mode == "duo") {
         Text(if (date == today) "把今天，\n留给彼此。" else "翻开这一天。", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Medium)
         Text("一张照片，一段当下。\n平凡的日子，也值得被记住。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         Button(onClick = onInvite, enabled = state.connected,
             modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp), shape = RoundedCornerShape(18.dp)) { Text("一起记录") }
     } else Text("我们的时间轴", style = MaterialTheme.typography.headlineLarge)
@@ -98,6 +100,9 @@ import java.util.Locale
         }
     } else {
         entries.forEach { entry ->
+            if (entry.mode == "friends") {
+                FriendTimelineEntry(entry, onOpen)
+            } else {
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.width(48.dp).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
                     Box(Modifier.size(48.dp).clickable { onOpen(entry.id) }
@@ -112,10 +117,11 @@ import java.util.Locale
                         Text(Instant.ofEpochMilli(entry.time).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm")),
                             style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         Text("和 ${entry.peerName} 的此刻", style = MaterialTheme.typography.titleMedium)
-                        Text("第 ${entry.ordinal} 次记录 · 点开查看两张图片", style = MaterialTheme.typography.bodySmall,
+                        Text(if (entry.mode == "friends") "第 ${entry.ordinal} 次群组记录 · 点开查看" else "第 ${entry.ordinal} 次记录 · 点开查看两张图片", style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+            }
             }
         }
     }
@@ -124,6 +130,9 @@ import java.util.Locale
 
 @Composable fun JournalDetail(record: JournalRecord?, viewportHeight: androidx.compose.ui.unit.Dp, frameName: String, onImage: (ByteArray) -> Unit) {
     if (record == null) { CircularProgressIndicator(); Text("正在读取本机记录…"); return }
+    if (record.entry.mode == "friends") {
+        FriendRecordDetail(record, viewportHeight, frameName, onImage)
+    } else {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(Instant.ofEpochMilli(record.entry.time).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M 月 d 日 · HH:mm", Locale.CHINA)),
             Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -131,8 +140,11 @@ import java.util.Locale
     }
     val mine = record.mine
     val available = (viewportHeight - 70.dp).coerceAtLeast(160.dp)
-    mine?.let { JournalImageCard(it, "我", frameName, Modifier.fillMaxWidth().height(available / 2)) { onImage(it) } }
-    JournalImageCard(record.peer, record.entry.peerName, frameName, Modifier.fillMaxWidth().height(if (mine == null) available else available / 2)) { onImage(record.peer) }
+    val imageHeight = if (record.others.isEmpty()) available / 2 else (available / 2).coerceAtLeast(220.dp)
+    mine?.let { JournalImageCard(it, "我", frameName, Modifier.fillMaxWidth().height(imageHeight)) { onImage(it) } }
+    JournalImageCard(record.peer, record.entry.peerName, frameName, Modifier.fillMaxWidth().height(if (mine == null && record.others.isEmpty()) available else imageHeight)) { onImage(record.peer) }
+    record.others.forEach { photo -> JournalImageCard(photo.bytes, photo.name, frameName, Modifier.fillMaxWidth().height(imageHeight)) { onImage(photo.bytes) } }
+    }
 }
 
 @Composable private fun JournalImageCard(bytes: ByteArray, label: String, frameName: String, modifier: Modifier, onClick: () -> Unit) {
