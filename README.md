@@ -2,12 +2,12 @@
 
 为两位好友设计的 Android 生活记录应用。发起邀请、拍照或截图，双方完成后一起查看彼此的此刻。
 
-本软件由CY个人开发。目前版本为 **0.5.2 测试版**，最低支持 Android 8.0（API 26），编译及目标 Android 17（API 37）。
+本软件由CY个人开发。目前版本为 **0.6.3 测试版**，最低支持 Android 8.0（API 26），编译及目标 Android 17（API 37）。
 
 ## 下载与安装
 
-- [下载 0.5.2 APK](https://github.com/cyuser199/shareTime/releases/download/v0.5.2/ShareTime-0.5.2-debug.apk)
-- [Release 说明与 SHA-256 校验文件](https://github.com/cyuser199/shareTime/releases/tag/v0.5.2)
+- [下载 0.6.3 APK](https://github.com/cyuser199/shareTime/releases/download/v0.6.3/ShareTime-0.6.3-debug.apk)
+- [Release 说明与 SHA-256 校验文件](https://github.com/cyuser199/shareTime/releases/tag/v0.6.3)
 
 安装包使用开发签名。已安装此前同签名测试版的手机可以覆盖升级，保留配对和本机历史。联想 Android 11 已验证保留配对；模拟器回到注册页已由用户确认为手动清除应用数据所致。卸载或清除应用数据会失去本机记录。
 
@@ -25,6 +25,8 @@
 迁移过程和运维说明见 [云端迁移记录](docs/cloud-migration.md)。
 
 ## 使用方法
+
+0.6.3 新增[展示相框](docs/photo-frames.md)：在设置、记录详情或记录大图菜单选择相框样式，直接应用到软件内的图片展示；保存相册仍保留原图。记录图片保持上下竖向展示，等比例完整显示。版本详情见 [0.6.3 说明](docs/release-0.6.3.md)。
 
 1. 两台手机安装 APK，阅读并同意使用协议。
 2. 新用户填写昵称并连接默认云服务器；升级用户沿用原身份。

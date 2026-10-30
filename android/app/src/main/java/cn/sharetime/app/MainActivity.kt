@@ -254,6 +254,8 @@ class MainActivity : ComponentActivity() {
                 text = { Text(Agreement.text, Modifier.verticalScroll(rememberScrollState())) },
                 confirmButton = { TextButton(onClick = { showAgreement = false }) { Text("关闭") } })
             val prefs = remember { getSharedPreferences("preferences", MODE_PRIVATE) }
+            var frameName by remember { mutableStateOf(prefs.getString("display_frame", "WHITE") ?: "WHITE") }
+            var frameSettings by remember { mutableStateOf(false) }
             var permissionGuide by rememberSaveable { mutableStateOf(!prefs.getBoolean("permissions_guided", false)) }
             LaunchedEffect(state.connected, permissionGuide) {
                 if (state.connected && !permissionGuide) { readIncomingLink(); readPairClipboard(); checkUpdate(false) }
@@ -325,16 +327,18 @@ class MainActivity : ComponentActivity() {
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = .88f)),
                     navigationIcon = { if (selectedEntry != null) TextButton(onClick = { selectedEntry = null }) { Text("返回") } },
                     actions = {
+                        if (selectedEntry != null) TextButton(onClick = { frameSettings = true }) { Text("相框") }
                         if (selectedEntry == null && (state.paired || state.history.isNotEmpty())) TextButton(onClick = { showCalendar = true }, enabled = state.round.isBlank()) { Text("日历") }
                         if (selectedEntry == null) TextButton(onClick = { settings = !settings }) { Text(if (settings) "完成" else "设置") }
                     }) },
                 snackbarHost = { SnackbarHost(snackbar) },
                 contentWindowInsets = WindowInsets.safeDrawing
             ) { insets ->
-                Box(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets).imePadding(), contentAlignment = Alignment.TopCenter) {
+                BoxWithConstraints(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets).imePadding(), contentAlignment = Alignment.TopCenter) {
+                    val detailViewportHeight = maxHeight
                     Column(Modifier.widthIn(max = 600.dp).fillMaxWidth().verticalScroll(rememberScrollState())
-                        .padding(horizontal = if (selectedEntry != null) 16.dp else 24.dp, vertical = if (selectedEntry != null) 12.dp else 20.dp),
-                        verticalArrangement = Arrangement.spacedBy(if (selectedEntry != null) 12.dp else 18.dp)) {
+                        .padding(horizontal = if (selectedEntry != null) 12.dp else 24.dp, vertical = if (selectedEntry != null) 8.dp else 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (selectedEntry != null) 10.dp else 18.dp)) {
                         if (settings) {
                             Text("连接与隐私", style = MaterialTheme.typography.headlineSmall)
                             Text("本软件由CY个人开发")
@@ -367,6 +371,7 @@ class MainActivity : ComponentActivity() {
                                 Text("配对安全码  ${state.fingerprint}", fontWeight = FontWeight.Medium)
                                 Text("与好友核对，两端应显示相同安全码。", style = MaterialTheme.typography.bodySmall)
                             }
+                            OutlinedButton(onClick = { frameSettings = true }) { Text("相框样式") }
                             Text("背景与外观", style = MaterialTheme.typography.titleMedium)
                             OutlinedButton(onClick = { backgroundPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !state.busy) { Text("选择背景图片") }
                             if (state.background != null) TextButton(onClick = { store.resetBackground() }) { Text("恢复默认背景") }
@@ -376,7 +381,7 @@ class MainActivity : ComponentActivity() {
                             if (state.paired) OutlinedButton(onClick = { confirmUnpair = true }) { Text("解除配对") }
                             else if (state.registered) OutlinedButton(onClick = { ReceiveService.setEnabled(this@MainActivity, false); store.reset(); settings = false }) { Text("更换服务器 / 重置本机身份") }
                         } else if (selectedEntry != null) {
-                            JournalDetail(detail, onImage = { expandedImage = it })
+                            JournalDetail(detail, viewportHeight = detailViewportHeight, frameName = frameName, onImage = { expandedImage = it })
                         } else if (historyBrowsing && state.round.isBlank()) {
                             JournalHome(state, LocalDate.parse(selectedDay), onDate = { showCalendar = true }, onToday = { selectedDay = LocalDate.now().toString() },
                                 onOpen = { selectedEntry = it }, onInvite = { requestNotifications(); store.invite() })
@@ -416,6 +421,9 @@ class MainActivity : ComponentActivity() {
                 text = { Text("当前记录也会结束。再次连接需要重新配对。") },
                 confirmButton = { TextButton(onClick = { store.unpair(); confirmUnpair = false }) { Text("解除配对") } },
                 dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("取消") } })
+            if (frameSettings) DisplayFrameSettings(frameName, onSelect = {
+                frameName = it; prefs.edit().putString("display_frame", it).apply()
+            }, onDismiss = { frameSettings = false })
             expandedImage?.let { bytes ->
                 androidx.compose.ui.window.Dialog(onDismissRequest = { expandedImage = null }, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
                     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -428,12 +436,13 @@ class MainActivity : ComponentActivity() {
                                     IconButton(onClick = { imageMenu = true }) { Icon(Icons.Default.MoreVert, "图片操作") }
                                     DropdownMenu(expanded = imageMenu, onDismissRequest = { imageMenu = false }) {
                                         DropdownMenuItem(text = { Text("保存图片") }, onClick = { imageMenu = false; expandedImage = null; save(bytes) })
+                                        DropdownMenuItem(text = { Text("相框样式") }, onClick = { imageMenu = false; frameSettings = true })
                                         if (selectedEntry != null) DropdownMenuItem(text = { Text("删除这条记录", color = MaterialTheme.colorScheme.error) },
                                             onClick = { imageMenu = false; expandedImage = null; deleteEntry = true })
                                     }
                                 }
                             }
-                            Picture(bytes, Modifier.weight(1f).fillMaxWidth())
+                            DisplayFramePicture(bytes, frameName, Modifier.weight(1f).fillMaxWidth())
                         }
                     }
                 }

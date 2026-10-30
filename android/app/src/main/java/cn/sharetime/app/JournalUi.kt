@@ -122,35 +122,26 @@ import java.util.Locale
     Text("历史记录仅加密保存在这台手机", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
-@Composable fun JournalDetail(record: JournalRecord?, onImage: (ByteArray) -> Unit) {
+@Composable fun JournalDetail(record: JournalRecord?, viewportHeight: androidx.compose.ui.unit.Dp, frameName: String, onImage: (ByteArray) -> Unit) {
     if (record == null) { CircularProgressIndicator(); Text("正在读取本机记录…"); return }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(Instant.ofEpochMilli(record.entry.time).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M 月 d 日 · HH:mm", Locale.CHINA)),
             Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("第 ${record.entry.ordinal} 次", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
     }
-    record.mine?.let { bytes ->
-        JournalImageCard(bytes, "我", onClick = { onImage(bytes) })
-    } ?: Text("这张本机图片未能恢复")
-    JournalImageCard(record.peer, record.entry.peerName, onClick = { onImage(record.peer) })
+    val mine = record.mine
+    val available = (viewportHeight - 70.dp).coerceAtLeast(160.dp)
+    mine?.let { JournalImageCard(it, "我", frameName, Modifier.fillMaxWidth().height(available / 2)) { onImage(it) } }
+    JournalImageCard(record.peer, record.entry.peerName, frameName, Modifier.fillMaxWidth().height(if (mine == null) available else available / 2)) { onImage(record.peer) }
 }
 
-@Composable private fun JournalImageCard(bytes: ByteArray, label: String, onClick: () -> Unit) {
-    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = .90f), tonalElevation = 1.dp) {
-        Box(Modifier.fillMaxWidth().height(((androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp - 240) / 2).coerceIn(140, 480).dp)) {
-            JournalPicture(bytes, Modifier.fillMaxSize())
-            Surface(Modifier.align(Alignment.TopStart).padding(10.dp), shape = CircleShape,
-                color = MaterialTheme.colorScheme.surface.copy(alpha = .92f), contentColor = MaterialTheme.colorScheme.onSurface) {
-                Text(label, Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, maxLines = 1)
-            }
-        }
-    }
+@Composable private fun JournalImageCard(bytes: ByteArray, label: String, frameName: String, modifier: Modifier, onClick: () -> Unit) {
+    DisplayFramePicture(bytes, frameName, modifier.clickable(onClick = onClick), Alignment.TopCenter, label)
 }
 
-@Composable fun JournalPicture(bytes: ByteArray, modifier: Modifier) {
+@Composable fun JournalPicture(bytes: ByteArray, modifier: Modifier, alignment: Alignment = Alignment.Center) {
     val bitmap = remember(bytes) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
-    if (bitmap != null) Image(bitmap.asImageBitmap(), "记录图片，点按查看大图", modifier.clip(RoundedCornerShape(20.dp)), contentScale = ContentScale.Fit)
+    if (bitmap != null) Image(bitmap.asImageBitmap(), "记录图片，点按查看大图", modifier, contentScale = ContentScale.Fit, alignment = alignment)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
