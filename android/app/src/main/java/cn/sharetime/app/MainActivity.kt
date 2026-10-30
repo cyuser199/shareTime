@@ -22,6 +22,9 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import android.content.ClipboardManager
 import android.content.ClipData
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -288,15 +291,16 @@ class MainActivity : ComponentActivity() {
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = .88f)),
                     navigationIcon = { if (selectedEntry != null) TextButton(onClick = { selectedEntry = null }) { Text("返回") } },
                     actions = {
-                        if (state.paired || state.history.isNotEmpty()) TextButton(onClick = { showCalendar = true }, enabled = state.round.isBlank()) { Text("日历") }
-                        TextButton(onClick = { settings = !settings }) { Text(if (settings) "完成" else "设置") }
+                        if (selectedEntry == null && (state.paired || state.history.isNotEmpty())) TextButton(onClick = { showCalendar = true }, enabled = state.round.isBlank()) { Text("日历") }
+                        if (selectedEntry == null) TextButton(onClick = { settings = !settings }) { Text(if (settings) "完成" else "设置") }
                     }) },
                 snackbarHost = { SnackbarHost(snackbar) },
                 contentWindowInsets = WindowInsets.safeDrawing
             ) { insets ->
                 Box(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets).imePadding(), contentAlignment = Alignment.TopCenter) {
                     Column(Modifier.widthIn(max = 600.dp).fillMaxWidth().verticalScroll(rememberScrollState())
-                        .padding(horizontal = 24.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                        .padding(horizontal = if (selectedEntry != null) 16.dp else 24.dp, vertical = if (selectedEntry != null) 12.dp else 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (selectedEntry != null) 12.dp else 18.dp)) {
                         if (settings) {
                             Text("连接与隐私", style = MaterialTheme.typography.headlineSmall)
                             Text("本软件由CY个人开发")
@@ -335,7 +339,7 @@ class MainActivity : ComponentActivity() {
                             if (state.paired) OutlinedButton(onClick = { confirmUnpair = true }) { Text("解除配对") }
                             else if (state.registered) OutlinedButton(onClick = { ReceiveService.setEnabled(this@MainActivity, false); store.reset(); settings = false }) { Text("更换服务器 / 重置本机身份") }
                         } else if (selectedEntry != null) {
-                            JournalDetail(detail, onImage = { expandedImage = it }, onSave = { save(it) }, onDelete = { deleteEntry = true })
+                            JournalDetail(detail, onImage = { expandedImage = it })
                         } else if (historyBrowsing && state.round.isBlank()) {
                             JournalHome(state, LocalDate.parse(selectedDay), onDate = { showCalendar = true }, onToday = { selectedDay = LocalDate.now().toString() },
                                 onOpen = { selectedEntry = it }, onInvite = { requestNotifications(); store.invite() })
@@ -378,10 +382,21 @@ class MainActivity : ComponentActivity() {
             expandedImage?.let { bytes ->
                 androidx.compose.ui.window.Dialog(onDismissRequest = { expandedImage = null }, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
                     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                        Column(Modifier.safeDrawingPadding().padding(16.dp)) {
-                            TextButton(onClick = { expandedImage = null }) { Text("返回") }
+                        var imageMenu by remember { mutableStateOf(false) }
+                        Column(Modifier.safeDrawingPadding()) {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { expandedImage = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "关闭图片") }
+                                Text("图片", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                                Box {
+                                    IconButton(onClick = { imageMenu = true }) { Icon(Icons.Default.MoreVert, "图片操作") }
+                                    DropdownMenu(expanded = imageMenu, onDismissRequest = { imageMenu = false }) {
+                                        DropdownMenuItem(text = { Text("保存图片") }, onClick = { imageMenu = false; expandedImage = null; save(bytes) })
+                                        if (selectedEntry != null) DropdownMenuItem(text = { Text("删除这条记录", color = MaterialTheme.colorScheme.error) },
+                                            onClick = { imageMenu = false; expandedImage = null; deleteEntry = true })
+                                    }
+                                }
+                            }
                             Picture(bytes, Modifier.weight(1f).fillMaxWidth())
-                            Button(onClick = { save(bytes) }, Modifier.fillMaxWidth()) { Text("保存到相册") }
                         }
                     }
                 }
@@ -457,12 +472,10 @@ class MainActivity : ComponentActivity() {
             Text("我的此刻", style = MaterialTheme.typography.titleMedium)
             state.preview?.let { bytes ->
                 Picture(bytes, Modifier.fillMaxWidth().height(280.dp).clickable { onImage(bytes) })
-                TextButton(onClick = { save(bytes) }) { Text("保存我的记录") }
             } ?: Text("本机临时图片已清理")
             Text("${state.peerName} 的此刻", style = MaterialTheme.typography.titleMedium)
             state.received?.let { bytes ->
                 Picture(bytes, Modifier.fillMaxWidth().height(280.dp).clickable { onImage(bytes) })
-                Button(onClick = { save(bytes) }, Modifier.fillMaxWidth()) { Text("保存好友的记录") }
             } ?: Text("正在接收图片…")
         }
         if (!incoming) TextButton(onClick = onEnd) { Text(if (state.phase == "complete") "结束并清理" else "取消本轮") }

@@ -122,20 +122,30 @@ import java.util.Locale
     Text("历史记录仅加密保存在这台手机", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
-@Composable fun JournalDetail(record: JournalRecord?, onImage: (ByteArray) -> Unit, onSave: (ByteArray) -> Unit, onDelete: () -> Unit) {
+@Composable fun JournalDetail(record: JournalRecord?, onImage: (ByteArray) -> Unit) {
     if (record == null) { CircularProgressIndicator(); Text("正在读取本机记录…"); return }
-    Text("这一个时刻", style = MaterialTheme.typography.headlineLarge)
-    Text(Instant.ofEpochMilli(record.entry.time).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("yyyy 年 M 月 d 日  HH:mm", Locale.CHINA)),
-        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Text("我的此刻", style = MaterialTheme.typography.titleMedium)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(Instant.ofEpochMilli(record.entry.time).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M 月 d 日 · HH:mm", Locale.CHINA)),
+            Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("第 ${record.entry.ordinal} 次", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+    }
     record.mine?.let { bytes ->
-        JournalPicture(bytes, Modifier.fillMaxWidth().height(280.dp).clickable { onImage(bytes) })
-        TextButton(onClick = { onSave(bytes) }) { Text("保存我的记录") }
+        JournalImageCard(bytes, "我", onClick = { onImage(bytes) })
     } ?: Text("这张本机图片未能恢复")
-    Text("${record.entry.peerName} 的此刻", style = MaterialTheme.typography.titleMedium)
-    JournalPicture(record.peer, Modifier.fillMaxWidth().height(280.dp).clickable { onImage(record.peer) })
-    Button(onClick = { onSave(record.peer) }, Modifier.fillMaxWidth()) { Text("保存好友的记录") }
-    TextButton(onClick = onDelete) { Text("删除本机这条记录") }
+    JournalImageCard(record.peer, record.entry.peerName, onClick = { onImage(record.peer) })
+}
+
+@Composable private fun JournalImageCard(bytes: ByteArray, label: String, onClick: () -> Unit) {
+    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = .90f), tonalElevation = 1.dp) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1.55f)) {
+            JournalPicture(bytes, Modifier.fillMaxSize())
+            Surface(Modifier.align(Alignment.TopStart).padding(10.dp), shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = .92f), contentColor = MaterialTheme.colorScheme.onSurface) {
+                Text(label, Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            }
+        }
+    }
 }
 
 @Composable fun JournalPicture(bytes: ByteArray, modifier: Modifier) {
