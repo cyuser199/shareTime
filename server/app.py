@@ -17,6 +17,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 class ActionError(ValueError):
@@ -295,6 +296,36 @@ def create_app(directory=None):
     @app.get('/health')
     async def health():
         return {'status': 'ok', 'protocol': 1}
+
+    updates = Path(os.environ.get('SHARETIME_UPDATES', str(relay.directory.parent / 'updates')))
+
+    @app.get('/updates/latest')
+    async def latest_update():
+        manifest = updates / 'latest.json'
+        if not manifest.exists():
+            return {'versionCode': 0}
+        try:
+            data = json.loads(manifest.read_text())
+            digest = data['sha256']
+            if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+                raise ValueError()
+            if not isinstance(data['versionCode'], int) or data['versionCode'] < 1 or not data['apkUrl'].startswith('https://'):
+                raise ValueError()
+            if not (updates / (digest + '.apk')).is_file():
+                raise ValueError()
+            return data
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(503, 'Update unavailable') from None
+
+    @app.get('/updates/apk/{digest}')
+    async def update_apk(digest: str):
+        if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+            raise HTTPException(404)
+        apk = updates / (digest + '.apk')
+        if not apk.is_file():
+            raise HTTPException(404)
+        return FileResponse(apk, media_type='application/vnd.android.package-archive', filename='ShareTime-update.apk',
+                            headers={'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff'})
 
     @app.get('/stats')
     async def stats():

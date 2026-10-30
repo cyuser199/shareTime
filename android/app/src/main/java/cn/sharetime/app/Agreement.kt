@@ -3,11 +3,11 @@ package cn.sharetime.app
 import android.content.Context
 
 object Agreement {
-    const val VERSION = 1
+    const val VERSION = 2
     fun accepted(context: Context) = context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getInt("agreement", 0) == VERSION
     fun accept(context: Context) { context.getSharedPreferences("preferences", Context.MODE_PRIVATE).edit().putInt("agreement", VERSION).apply() }
     val text = """
-        此刻 · 使用协议与隐私说明（草案 v1）
+        此刻 · 使用协议与隐私说明（草案 v2）
         更新日期：2026 年 10 月 29 日
 
         本软件由CY个人开发，用于两位好友自愿分享生活记录。
@@ -21,6 +21,7 @@ object Agreement {
 
         3. 邀请与权限
         离线邀请在服务器内存最多等待 24 小时，重启后不保留；同意后的记录限时 10 分钟。通知、后台接收和悬浮窗均可自行选择与关闭。悬浮窗仅用于邀请提醒，不读取其他应用内容；截图只在系统授权后截取一次。拒绝额外权限仍可在应用内操作。
+        在应用前台且尚未配对时，会识别剪贴板中带有此刻标记的好友口令，再由你确认是否申请配对。其他剪贴板内容不会上传。打开应用或点击检查更新时，会向当前服务器获取版本信息；下载和安装需要你的操作。
 
         4. 服务边界
         这是个人开发的测试软件，不承诺全天候在线或通知必达。断网、关机、强制停止、系统省电或服务器停机均可能造成延迟或内容丢失，请自行保存重要记录。当前版本通过互联网连接云服务器，请保持网络可用。

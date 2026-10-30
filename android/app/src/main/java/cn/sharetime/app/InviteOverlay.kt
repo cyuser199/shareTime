@@ -14,7 +14,6 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 
@@ -25,7 +24,7 @@ class ReceiveRestoreReceiver : BroadcastReceiver() {
 }
 
 /** Optional, bounded invitation card. Never turns on the screen or bypasses the lock screen. */
-@android.annotation.SuppressLint("StaticFieldLeak") // Application context only; card is removed within 15 seconds.
+@android.annotation.SuppressLint("StaticFieldLeak") // Application context only; card is removed within 4 seconds.
 object InviteOverlay {
     private val handler = Handler(Looper.getMainLooper())
     private var view: View? = null
@@ -50,20 +49,15 @@ object InviteOverlay {
             setPadding((20 * density).toInt(), (12 * density).toInt(), (20 * density).toInt(), (12 * density).toInt())
             background = GradientDrawable().apply { setColor(Color.rgb(235, 247, 237)); cornerRadius = 20 * density }
         }
-        card.addView(TextView(context).apply { text = "此刻 · 好友邀请你一起记录"; textSize = 18f; setTextColor(Color.rgb(25, 55, 38)) })
-        card.addView(Button(context).apply { text = "查看邀请"; setOnClickListener {
-            removeNow()
-            context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-        } })
-        card.addView(Button(context).apply { text = "稍后查看"; setOnClickListener { removeNow() } })
+        card.addView(TextView(context).apply { text = "此刻 · 好友邀请你一起记录"; textSize = 14f; setTextColor(Color.rgb(25, 55, 38)) })
         val params = WindowManager.LayoutParams(
-            (context.resources.displayMetrics.widthPixels - 32 * density).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT).apply { gravity = Gravity.CENTER }
+            minOf((300 * density).toInt(), context.resources.displayMetrics.widthPixels - (32 * density).toInt()), WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = (100 * density).toInt(); alpha = 0.8f }
         try {
             manager = context.getSystemService(WindowManager::class.java)
             manager!!.addView(card, params); view = card
-            handler.postDelayed(remove, 15_000)
+            handler.postDelayed(remove, 4_000)
         } catch (_: RuntimeException) { view = null; manager = null }
     } }
 }

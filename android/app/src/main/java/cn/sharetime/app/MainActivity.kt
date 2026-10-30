@@ -18,6 +18,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import android.content.ClipboardManager
+import android.content.ClipData
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -59,6 +63,10 @@ class MainActivity : ComponentActivity() {
     private var cameraRound = ""
     private var pickerRound = ""
     private var projectionRound = ""
+    private var clipboardCode by mutableStateOf("")
+    private var ignoredPhrase = ""
+    private var update by mutableStateOf<AppUpdate?>(null)
+    private var updateChecking by mutableStateOf(false)
     private var pendingSave: ByteArray? = null
     private val camera = registerForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         if (ok) cameraUri?.let { store.prepareUri(it, cameraRound) }
@@ -98,6 +106,38 @@ class MainActivity : ComponentActivity() {
     }
     override fun onStart() { super.onStart(); if (Agreement.accepted(this)) { store.onForeground(); ReceiveService.restore(this) } }
     override fun onStop() { store.onBackground(); super.onStop() }
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && Agreement.accepted(this)) lifecycleScope.launch {
+            delay(700)
+            readPairClipboard()
+        }
+    }
+    private fun readPairClipboard(manual: Boolean = false) {
+        val state = store.state.value
+        if (!hasWindowFocus() || !state.registered || state.paired) return
+        try {
+            val clip = getSystemService(ClipboardManager::class.java).primaryClip
+            val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString().orEmpty()
+            val code = PairPhrase.parse(text)
+            if (code != null && code != state.code && (manual || text != ignoredPhrase)) {
+                ignoredPhrase = text; clipboardCode = code
+            } else if (manual) store.message("没有找到可用的此刻好友口令")
+        } catch (_: Exception) { if (manual) store.message("暂时无法读取剪贴板，请手动输入配对码") }
+    }
+    private fun copyPair(code: String, phrase: Boolean) {
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("此刻配对", if (phrase) PairPhrase.create(code) else code))
+        store.message(if (phrase) "好友口令已复制，发给好友后打开此刻即可识别" else "配对码已复制")
+    }
+    private fun checkUpdate(manual: Boolean) {
+        if (updateChecking) return
+        updateChecking = true
+        lifecycleScope.launch {
+            try { update = Updates.check(store.state.value.url); if (manual && update == null) store.message("已经是最新版本 ${BuildConfig.VERSION_NAME}") }
+            catch (_: Exception) { if (manual) store.message("检查更新失败，请稍后重试") }
+            finally { updateChecking = false }
+        }
+    }
     private fun openSystemSettings(intent: Intent) {
         try { startActivity(intent) } catch (_: Exception) { store.message("此手机不支持该入口，请在系统设置中打开此刻的应用权限") }
     }
@@ -145,7 +185,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
+    @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
     @Composable private fun ShareTimeScreen() {
         val state by store.state.collectAsStateWithLifecycle()
         val dark = isSystemInDarkTheme()
@@ -176,6 +216,26 @@ class MainActivity : ComponentActivity() {
             if (showAgreement) AlertDialog(onDismissRequest = { showAgreement = false }, title = { Text("使用协议") },
                 text = { Text(Agreement.text, Modifier.verticalScroll(rememberScrollState())) },
                 confirmButton = { TextButton(onClick = { showAgreement = false }) { Text("关闭") } })
+            val prefs = remember { getSharedPreferences("preferences", MODE_PRIVATE) }
+            var permissionGuide by rememberSaveable { mutableStateOf(!prefs.getBoolean("permissions_guided", false)) }
+            LaunchedEffect(state.connected, permissionGuide) {
+                if (state.connected && !permissionGuide) { readPairClipboard(); checkUpdate(false) }
+            }
+            if (permissionGuide) AlertDialog(onDismissRequest = {}, title = { Text("开始使用 · 权限设置") },
+                text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("先设置邀请提醒。拍照、截图和保存权限会在使用对应功能时按需处理；拒绝提醒权限仍可在应用内操作。")
+                    OutlinedButton(onClick = { requestNotifications() }) { Text("开启系统通知") }
+                    OutlinedButton(onClick = { openSystemSettings(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }) { Text("开启小窗提醒（可选）") }
+                    Text("悬浮窗仅提醒，4 秒自动消失，无需确认。")
+                } }, confirmButton = { TextButton(onClick = { prefs.edit().putBoolean("permissions_guided", true).apply(); permissionGuide = false }) { Text("完成，进入应用") } })
+            if (clipboardCode.isNotBlank() && !permissionGuide) AlertDialog(onDismissRequest = { clipboardCode = "" }, title = { Text("发现好友口令") },
+                text = { Text("是否使用剪贴板中的此刻口令申请配对？需生成口令的好友确认。") },
+                confirmButton = { TextButton(onClick = { store.command("join", org.json.JSONObject().put("code", clipboardCode)); clipboardCode = "" }, enabled = state.connected) { Text("申请连接") } },
+                dismissButton = { TextButton(onClick = { clipboardCode = "" }) { Text("忽略") } })
+            update?.let { item -> AlertDialog(onDismissRequest = { update = null }, title = { Text("发现新版本 ${item.version}") },
+                text = { Text(item.notes + "\n\n下载后按系统提示安装，覆盖安装保留本机数据。") },
+                confirmButton = { TextButton(onClick = { openSystemSettings(Intent(Intent.ACTION_VIEW, Uri.parse(item.url))); update = null }) { Text("下载更新") } },
+                dismissButton = { TextButton(onClick = { update = null }) { Text("稍后") } }) }
             var settings by rememberSaveable { mutableStateOf(false) }
             var confirmEnd by rememberSaveable { mutableStateOf(false) }
             var confirmUnpair by rememberSaveable { mutableStateOf(false) }
@@ -240,6 +300,8 @@ class MainActivity : ComponentActivity() {
                         if (settings) {
                             Text("连接与隐私", style = MaterialTheme.typography.headlineSmall)
                             Text("本软件由CY个人开发")
+                            Text("版本 ${BuildConfig.VERSION_NAME}")
+                            OutlinedButton(onClick = { checkUpdate(true) }, enabled = !updateChecking) { Text(if (updateChecking) "正在检查…" else "检查更新") }
                             TextButton(onClick = { showAgreement = true }) { Text("使用协议与隐私说明") }
                             OutlinedButton(onClick = { openSystemSettings(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }) { Text("允许邀请悬浮窗") }
                             Text("可选权限：在其他应用上方显示邀请卡片。锁屏或勿扰时使用系统通知，不强行弹出。", style = MaterialTheme.typography.bodySmall)
@@ -338,6 +400,7 @@ class MainActivity : ComponentActivity() {
             Text(if (state.busy) "正在连接…" else "连接服务器")
         }
     }
+    @OptIn(ExperimentalFoundationApi::class)
     @Composable private fun Pairing(state: UiState) {
         var code by rememberSaveable { mutableStateOf("") }
         Text("连接你的好友", style = MaterialTheme.typography.headlineLarge)
@@ -346,13 +409,18 @@ class MainActivity : ComponentActivity() {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("我的配对码", style = MaterialTheme.typography.titleMedium)
                 if (state.code.isNotBlank()) {
-                    Text(state.code.chunked(4).joinToString(" "), style = MaterialTheme.typography.headlineLarge)
+                    Text(state.code.chunked(4).joinToString(" "), style = MaterialTheme.typography.headlineLarge,
+                        modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { copyPair(state.code, false) }).semantics { contentDescription = "配对码，长按复制" })
+                    Text("长按配对码复制", style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = { copyPair(state.code, true) }, enabled = System.currentTimeMillis() < state.codeUntil) { Text("复制好友口令") }
                     Countdown(state.codeUntil, "配对码有效时间")
                 }
                 FilledTonalButton(onClick = { store.command("create_code") }, enabled = state.connected) { Text(if (state.code.isBlank()) "生成配对码" else "重新生成") }
             }
         }
         Text("或者，输入好友的配对码")
+        OutlinedButton(onClick = { readPairClipboard(true) }) { Text("读取剪贴板好友口令") }
+        Text("生成配对码后可复制好友口令；仅在应用前台识别此刻口令，不上传其他剪贴板内容。", style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(code, { code = it.filter(Char::isDigit).take(8) }, label = { Text("8 位配对码") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth())
         Button(onClick = { store.command("join", org.json.JSONObject().put("code", code)) }, enabled = state.connected && code.length == 8,

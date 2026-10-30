@@ -11,6 +11,28 @@ from fastapi.testclient import TestClient
 from app import create_app
 
 
+def test_update_manifest_and_download(tmp_path):
+    import hashlib
+    app = create_app(tmp_path / 'data')
+    updates = tmp_path / 'updates'
+    updates.mkdir()
+    with TestClient(app) as c:
+        assert c.get('/updates/latest').json() == {'versionCode': 0}
+        assert c.get('/updates/apk/invalid').status_code == 404
+        body = b'synthetic apk test'
+        digest = hashlib.sha256(body).hexdigest()
+        (updates / (digest + '.apk')).write_bytes(body)
+        manifest = {'versionCode': 6, 'versionName': '0.4.0', 'notes': 'test', 'sha256': digest,
+                    'apkUrl': 'https://example.com/updates/apk/' + digest}
+        (updates / 'latest.json').write_text(json.dumps(manifest))
+        assert c.get('/updates/latest').json() == manifest
+        download = c.get('/updates/apk/' + digest)
+        assert download.content == body
+        assert download.headers['content-type'] == 'application/vnd.android.package-archive'
+        (updates / 'latest.json').write_text('{}')
+        assert c.get('/updates/latest').status_code == 503
+
+
 def identity(client, name='friend'):
     key = ec.generate_private_key(ec.SECP256R1())
     public = base64.b64encode(key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)).decode()
