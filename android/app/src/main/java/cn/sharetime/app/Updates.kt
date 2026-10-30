@@ -7,7 +7,7 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-data class AppUpdate(val code: Int, val version: String, val notes: String, val url: String, val sha256: String)
+data class AppUpdate(val code: Int, val version: String, val notes: String, val url: String, val sha256: String, val serverLogicUpdate: Boolean = false)
 
 object Updates {
     private val client = OkHttpClient.Builder().callTimeout(15, TimeUnit.SECONDS).build()
@@ -21,7 +21,7 @@ object Updates {
             require(url.startsWith("https://"))
             val hash = json.getString("sha256")
             require(hash.matches(Regex("[a-f0-9]{64}")))
-            AppUpdate(code, json.getString("versionName"), json.optString("notes"), url, hash)
+            AppUpdate(code, json.getString("versionName"), json.optString("notes"), url, hash, json.optBoolean("serverLogicUpdate"))
         }
     }
 }

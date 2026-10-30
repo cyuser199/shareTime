@@ -36,7 +36,7 @@ def main():
         run("set -eu; test ! -e /opt/sharetime/data/signing.key; id sharetime >/dev/null 2>&1 || useradd --system --home /opt/sharetime --shell /usr/sbin/nologin sharetime; install -d -m 755 " + release + "; install -d -m 700 -o sharetime -g sharetime /opt/sharetime/data; python3 -m venv " + release + '/venv')
         service = (ROOT / 'server/sharetime.service').read_text().replace('--host 0.0.0.0 --port 8443', '--host 127.0.0.1 --port 18843').replace(' --ssl-certfile /opt/sharetime/tls/server.crt --ssl-keyfile /opt/sharetime/tls/server.key', '')
         with cloud.open_sftp() as sftp:
-            for name in ['app.py', 'requirements.txt']:
+            for name in ['app.py', 'pairing.py', 'requirements.txt']:
                 sftp.put(str(ROOT / 'server' / name), release + '/' + name)
             with sftp.file('/etc/systemd/system/sharetime.service', 'w') as f: f.write(service)
         run(release + '/venv/bin/pip install --disable-pip-version-check -q -r ' + release + '/requirements.txt')

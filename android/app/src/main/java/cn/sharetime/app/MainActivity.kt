@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
     private var projectionRound = ""
     private var clipboardCode by mutableStateOf("")
     private var ignoredPhrase = ""
+    private var incomingLink: Uri? = null
     private var update by mutableStateOf<AppUpdate?>(null)
     private var updateChecking by mutableStateOf(false)
     private var pendingSave: ByteArray? = null
@@ -98,6 +99,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         if (Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
         Notices.channels(this)
+        incomingLink = intent.data
         setContent { ShareTimeScreen() }
     }
     override fun onSaveInstanceState(outState: Bundle) {
@@ -109,6 +111,26 @@ class MainActivity : ComponentActivity() {
     }
     override fun onStart() { super.onStart(); if (Agreement.accepted(this)) { store.onForeground(); ReceiveService.restore(this) } }
     override fun onStop() { store.onBackground(); super.onStop() }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        incomingLink = intent.data
+        readIncomingLink()
+    }
+    private fun readIncomingLink() {
+        val link = incomingLink ?: return
+        val state = store.state.value
+        if (!state.registered || !state.connected) return
+        incomingLink = null
+        if (link.scheme != "sharetime" || link.host != "pair") return
+        val code = link.getQueryParameter("code").orEmpty()
+        if (!code.matches(Regex("[0-9]{8}"))) return
+        if (link.getQueryParameter("server")?.trimEnd('/') != state.url.trimEnd('/')) {
+            store.message("此链接来自其他服务器，请通过自建服务器入口确认地址后再配对"); return
+        }
+        if (state.paired) { store.message("已有配对，请先解除后再连接其他好友"); return }
+        clipboardCode = code
+    }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && Agreement.accepted(this)) lifecycleScope.launch {
@@ -123,20 +145,32 @@ class MainActivity : ComponentActivity() {
             val clip = getSystemService(ClipboardManager::class.java).primaryClip
             val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString().orEmpty()
             val code = PairPhrase.parse(text)
+            val origin = PairPhrase.server(text)
+            if (code != null && origin != null && origin.trimEnd('/') != state.url.trimEnd('/')) {
+                if (manual || text != ignoredPhrase) store.message("此口令来自其他服务器，请先确认自建服务器地址")
+                ignoredPhrase = text; return
+            }
             if (code != null && code != state.code && (manual || text != ignoredPhrase)) {
                 ignoredPhrase = text; clipboardCode = code
             } else if (manual) store.message("没有找到可用的此刻好友口令")
         } catch (_: Exception) { if (manual) store.message("暂时无法读取剪贴板，请手动输入配对码") }
     }
     private fun copyPair(code: String, phrase: Boolean) {
-        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("此刻配对", if (phrase) PairPhrase.create(code) else code))
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("此刻配对", if (phrase) PairPhrase.create(code, store.state.value.url) else code))
         store.message(if (phrase) "好友口令已复制，发给好友后打开此刻即可识别" else "配对码已复制")
     }
     private fun checkUpdate(manual: Boolean) {
         if (updateChecking) return
         updateChecking = true
         lifecycleScope.launch {
-            try { update = Updates.check(store.state.value.url); if (manual && update == null) store.message("已经是最新版本 ${BuildConfig.VERSION_NAME}") }
+            try {
+                val candidate = Updates.check(store.state.value.url)
+                val prefs = getSharedPreferences("update_reminders", MODE_PRIVATE)
+                val key = store.state.value.url + ":" + candidate?.code
+                update = candidate?.takeIf { manual || it.serverLogicUpdate || !prefs.getBoolean(key, false) }
+                if (update != null && !update!!.serverLogicUpdate) prefs.edit().putBoolean(key, true).apply()
+                if (manual && candidate == null) store.message("已经是最新版本 ${BuildConfig.VERSION_NAME}")
+            }
             catch (_: Exception) { if (manual) store.message("检查更新失败，请稍后重试") }
             finally { updateChecking = false }
         }
@@ -222,7 +256,7 @@ class MainActivity : ComponentActivity() {
             val prefs = remember { getSharedPreferences("preferences", MODE_PRIVATE) }
             var permissionGuide by rememberSaveable { mutableStateOf(!prefs.getBoolean("permissions_guided", false)) }
             LaunchedEffect(state.connected, permissionGuide) {
-                if (state.connected && !permissionGuide) { readPairClipboard(); checkUpdate(false) }
+                if (state.connected && !permissionGuide) { readIncomingLink(); readPairClipboard(); checkUpdate(false) }
             }
             if (permissionGuide) AlertDialog(onDismissRequest = {}, title = { Text("开始使用 · 权限设置") },
                 text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -232,8 +266,8 @@ class MainActivity : ComponentActivity() {
                     Text("悬浮窗仅提醒，4 秒自动消失，无需确认。")
                 } }, confirmButton = { TextButton(onClick = { prefs.edit().putBoolean("permissions_guided", true).apply(); permissionGuide = false }) { Text("完成，进入应用") } })
             if (clipboardCode.isNotBlank() && !permissionGuide) AlertDialog(onDismissRequest = { clipboardCode = "" }, title = { Text("发现好友口令") },
-                text = { Text("是否使用剪贴板中的此刻口令申请配对？需生成口令的好友确认。") },
-                confirmButton = { TextButton(onClick = { store.command("join", org.json.JSONObject().put("code", clipboardCode)); clipboardCode = "" }, enabled = state.connected) { Text("申请连接") } },
+                text = { Text("是否使用剪贴板中的固定配对码连接好友？对方在线将直接配对，离线则等待上线。仅使用信任的好友提供的口令。") },
+                confirmButton = { TextButton(onClick = { store.command("join_fixed", org.json.JSONObject().put("code", clipboardCode)); clipboardCode = "" }, enabled = state.connected) { Text("申请连接") } },
                 dismissButton = { TextButton(onClick = { clipboardCode = "" }) { Text("忽略") } })
             update?.let { item -> AlertDialog(onDismissRequest = { update = null }, title = { Text("发现新版本 ${item.version}") },
                 text = { Text(item.notes + "\n\n下载后按系统提示安装，覆盖安装保留本机数据。") },
@@ -312,7 +346,7 @@ class MainActivity : ComponentActivity() {
                             OutlinedButton(onClick = { openSystemSettings(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }) { Text("后台省电设置") }
                             OutlinedButton(onClick = { openSystemSettings(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) }) { Text("应用后台 / 自启动设置") }
                             Text("建议允许后台运行和自启动，并在系统通知中允许横幅与锁屏通知；不同品牌入口可能不同。强制停止、断网和深度休眠仍会影响送达。", style = MaterialTheme.typography.bodySmall)
-                            Text(state.url, style = MaterialTheme.typography.bodyMedium)
+                            ServerAddress(state.url, onChange = { store.switchServer(it) })
                             Text(if (state.connected) "服务器已连接" else "连接已断开，正在尝试重连")
                             if (state.registered) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -335,7 +369,7 @@ class MainActivity : ComponentActivity() {
                             if (state.background != null) TextButton(onClick = { store.resetBackground() }) { Text("恢复默认背景") }
                             Text("背景只在这台手机显示，图片会自动添加柔和遮罩，保证文字清晰。", style = MaterialTheme.typography.bodySmall)
                             Text("记录完成后，两张图片会加密保存在本机时间轴，支持按日历查看与删除。服务器仅在内存中转发，双方收到后清理中转内容；未完成的记录最多保留 10 分钟。")
-                            Text("服务器只持久保存累计注册设备数和服务密钥。重装会重新计数。离线邀请最多等待 24 小时，对方重新连接后接收；服务器重启会清除等待邀请。", style = MaterialTheme.typography.bodySmall)
+                            Text("服务器保存统计、服务密钥，以及最多 3 天的待配对登记和申请。配对成功确认后清理相关信息。图片仍只在内存中转。", style = MaterialTheme.typography.bodySmall)
                             if (state.paired) OutlinedButton(onClick = { confirmUnpair = true }) { Text("解除配对") }
                             else if (state.registered) OutlinedButton(onClick = { ReceiveService.setEnabled(this@MainActivity, false); store.reset(); settings = false }) { Text("更换服务器 / 重置本机身份") }
                         } else if (selectedEntry != null) {
@@ -403,14 +437,35 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    @Composable private fun ServerAddress(url: String, onChange: (String) -> Unit) {
+        var show by remember { mutableStateOf(false) }
+        var custom by remember(url) { mutableStateOf(url) }
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+            OutlinedTextField(url, {}, readOnly = true, label = { Text("服务器地址") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    unfocusedTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)))
+            TextButton(onClick = { custom = url; show = true }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp)) {
+                Text("想和朋友建立自己的服务器", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        if (show) AlertDialog(onDismissRequest = { show = false }, title = { Text("和朋友自建服务器") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("项目开源，可与好友部署独立服务。已注册设备切换前需先解除配对；切换将重新注册身份和配对码，本机历史保留。")
+                TextButton(onClick = { openSystemSettings(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/cyuser199/shareTime"))) }) { Text("查看 GitHub 项目") }
+                OutlinedTextField(custom, { custom = it }, label = { Text("自建服务器 HTTPS 地址") }, singleLine = true)
+            }
+        }, confirmButton = { TextButton(onClick = { onChange(custom); show = false }) { Text("使用此服务器") } },
+            dismissButton = { TextButton(onClick = { show = false }) { Text("取消") } })
+    }
     @Composable private fun Registration(state: UiState) {
         var url by rememberSaveable { mutableStateOf(state.url) }
         var name by rememberSaveable { mutableStateOf(state.name) }
         Text("把此刻，\n分享给一个人。", style = MaterialTheme.typography.headlineLarge)
         Text("先连接服务器，再和好友配对。无需手机号或账号。")
         OutlinedTextField(name, { name = it.take(24) }, label = { Text("你的昵称") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(url, { url = it }, label = { Text("服务器地址") }, supportingText = { Text("需要 HTTPS；默认服务器仅在局域网可达") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true, modifier = Modifier.fillMaxWidth())
+        ServerAddress(url, onChange = { url = it })
         Button(onClick = { requestNotifications(); store.register(url, name) }, enabled = !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
             Text(if (state.busy) "正在连接…" else "连接服务器")
         }
@@ -419,28 +474,32 @@ class MainActivity : ComponentActivity() {
     @Composable private fun Pairing(state: UiState) {
         var code by rememberSaveable { mutableStateOf("") }
         Text("连接你的好友", style = MaterialTheme.typography.headlineLarge)
-        Text(if (state.connected) "${state.name}，只需一人生成配对码。" else "正在连接服务器…")
+        Text(if (state.connected) "${state.name}，每台设备拥有固定配对码。" else "正在连接服务器…")
         Card(shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("我的配对码", style = MaterialTheme.typography.titleMedium)
+                Text("我的固定配对码", style = MaterialTheme.typography.titleMedium)
                 if (state.code.isNotBlank()) {
                     Text(state.code.chunked(4).joinToString(" "), style = MaterialTheme.typography.headlineLarge,
                         modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { copyPair(state.code, false) }).semantics { contentDescription = "配对码，长按复制" })
                     Text("长按配对码复制", style = MaterialTheme.typography.bodySmall)
-                    OutlinedButton(onClick = { copyPair(state.code, true) }, enabled = System.currentTimeMillis() < state.codeUntil) { Text("复制好友口令") }
-                    Countdown(state.codeUntil, "配对码有效时间")
+                    OutlinedButton(onClick = { copyPair(state.code, true) }, enabled = true) { Text("复制好友口令") }
+                    Text("号码不变；服务器登记最长保留 3 天，配对成功后清理。", style = MaterialTheme.typography.bodySmall)
                 }
-                FilledTonalButton(onClick = { store.command("create_code") }, enabled = state.connected) { Text(if (state.code.isBlank()) "生成配对码" else "重新生成") }
+                if (state.code.isBlank() || state.codeUntil <= System.currentTimeMillis()) FilledTonalButton(onClick = { store.command("reserve_fixed") }, enabled = state.connected) { Text(if (state.code.isBlank()) "登记固定配对码" else "重新登记原码") }
             }
         }
         Text("或者，输入好友的配对码")
         OutlinedButton(onClick = { readPairClipboard(true) }) { Text("读取剪贴板好友口令") }
-        Text("生成配对码后可复制好友口令；仅在应用前台识别此刻口令，不上传其他剪贴板内容。", style = MaterialTheme.typography.bodySmall)
+        Text("固定配对码也绑定分享链接。仅在应用前台识别口令，不上传其他剪贴板内容。", style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(code, { code = it.filter(Char::isDigit).take(8) }, label = { Text("8 位配对码") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button(onClick = { store.command("join", org.json.JSONObject().put("code", code)) }, enabled = state.connected && code.length == 8,
+        Button(onClick = { store.command("join_fixed", org.json.JSONObject().put("code", code)) }, enabled = state.connected && code.length == 8,
             modifier = Modifier.fillMaxWidth()) { Text("申请配对") }
-        Text("配对码 5 分钟有效，需要生成端确认。", style = MaterialTheme.typography.bodySmall)
+        Text("持有配对码可直接配对，请仅分享给信任的好友。离线申请最多等待 3 天。", style = MaterialTheme.typography.bodySmall)
+        if (state.pairingStatus.isNotBlank()) {
+            Text(state.pairingStatus, color = MaterialTheme.colorScheme.primary)
+            TextButton(onClick = { store.command("cancel_fixed") }) { Text("取消配对申请") }
+        }
     }
     @Composable private fun Round(state: UiState, onImage: (ByteArray) -> Unit, onEnd: () -> Unit) {
         val awaiting = state.phase == "waiting"

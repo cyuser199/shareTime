@@ -1,4 +1,4 @@
-"""ShareTime relay. Only counters and the signing key survive a restart.
+"""ShareTime relay. Counters, signing key and bounded pairing metadata persist.
 
 Record bodies are opaque end-to-end ciphertext, bounded in RAM and never logged.
 One uvicorn worker is required: coordination deliberately has no persistent DB.
@@ -17,8 +17,10 @@ from pathlib import Path
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from urllib.parse import urlencode
 from pydantic import BaseModel, Field
+from pairing import PairingRegistry
 
 class ActionError(ValueError):
     """A safe, user-facing operation failure."""
@@ -53,6 +55,7 @@ class Relay:
         self.rounds = {}
         self.rate = {}
         self.lock = asyncio.Lock()
+        self.registry = PairingRegistry(self)
 
     def sign(self, obj):
         body = b64(json.dumps(obj, separators=(',', ':'), ensure_ascii=False).encode())
@@ -106,6 +109,7 @@ class Relay:
             await self.broadcast_pair(pair, {'type': 'ended', 'reason': reason})
 
     async def sweep(self):
+        self.registry.clean()
         now = time.monotonic()
         self.codes = {k: v for k, v in self.codes.items() if v['expires'] > now}
         self.pending = {k: v for k, v in self.pending.items() if v['expires'] > now}
@@ -151,6 +155,20 @@ class Relay:
             return
         if self.limited('events:' + uid, 90):
             raise ActionError('操作过于频繁，请稍后再试')
+        if kind == 'reserve_fixed':
+            await self.registry.reserve(device, obj.get('ticket'), renew=True)
+            return
+        if kind == 'join_fixed':
+            await self.registry.join(device, obj.get('code'))
+            return
+        if kind == 'cancel_fixed':
+            self.registry.data['pending'].pop(uid, None)
+            self.registry.save()
+            await self.send(uid, {'type': 'pair_waiting', 'message': '配对申请已取消'})
+            return
+        if kind == 'paired_ack':
+            self.registry.ack(device)
+            return
         if kind == 'create_code':
             if pair:
                 raise ActionError('请先解除现有配对')
@@ -205,6 +223,7 @@ class Relay:
             raise ActionError('请先配对')
         peer = next(m for m in pair['members'] if m != uid)
         if kind == 'unpair':
+            self.registry.unpair(pair['members'])
             record = self.round_for(pair['id'])
             if record:
                 await self.close_round(record, '配对已解除')
@@ -327,6 +346,20 @@ def create_app(directory=None):
         return FileResponse(apk, media_type='application/vnd.android.package-archive', filename='ShareTime-update.apk',
                             headers={'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff'})
 
+    @app.get('/pair', response_class=HTMLResponse)
+    async def pair_link(code: str):
+        if len(code) != 8 or not code.isascii() or not code.isdigit():
+            raise HTTPException(400, 'Invalid pairing code')
+        import html
+        base = os.environ.get('SHARETIME_PUBLIC_URL', 'https://cyadmin.xyz/sharetime').rstrip('/')
+        target = 'sharetime://pair?' + urlencode({'code': code, 'server': base})
+        return HTMLResponse('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+                            '<title>此刻 · 好友配对</title><body style="font-family:system-ui;max-width:420px;margin:64px auto;padding:24px">'
+                            '<h1>与好友连接此刻</h1><p>固定配对码</p><h2>' + code + '</h2><p>仅使用信任的好友提供的链接。对方在线时将直接配对。</p>'
+                            '<p><a href="' + html.escape(target, quote=True) + '">用此刻打开</a></p>'
+                            '<p><a href="https://github.com/cyuser199/shareTime/releases">下载安装此刻</a></p></body></html>',
+                            headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
+
     @app.get('/stats')
     async def stats():
         return {**relay.stats, 'online_devices': len(relay.connections)}
@@ -381,6 +414,8 @@ def create_app(directory=None):
                         await ws.send_json({'type': 'unpaired'})
                     else:
                         relay.pairs[pair['id']] = {'id': pair['id'], 'members': pair['members']}
+                if auth.get('pairingProtocol') == 2:
+                    await relay.registry.reconnect(device, auth.get('reservation'))
                 await relay.state(uid)
                 pair = relay.pair_for(uid)
                 if pair:

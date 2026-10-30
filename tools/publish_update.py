@@ -10,7 +10,7 @@ import pathlib
 import shlex
 import paramiko
 
-def publish(client, apk, code, version, notes, base='https://cyadmin.xyz/sharetime'):
+def publish(client, apk, code, version, notes, base='https://cyadmin.xyz/sharetime', server_logic=False):
     digest = hashlib.sha256(apk.read_bytes()).hexdigest()
     directory = '/opt/sharetime/updates'
     _, out, err = client.exec_command('install -d -o sharetime -g sharetime -m 755 ' + directory)
@@ -24,7 +24,7 @@ def publish(client, apk, code, version, notes, base='https://cyadmin.xyz/shareti
         if out.read().decode().split()[0] != digest: raise RuntimeError('Upload hash mismatch')
         sftp.posix_rename(target + '.tmp', target)
         data = {'versionCode': code, 'versionName': version, 'notes': notes,
-                'apkUrl': base.rstrip('/') + '/updates/apk/' + digest, 'sha256': digest, 'size': apk.stat().st_size}
+                'apkUrl': base.rstrip('/') + '/updates/apk/' + digest, 'sha256': digest, 'size': apk.stat().st_size, 'serverLogicUpdate': server_logic}
         with sftp.file(directory + '/latest.json.tmp', 'w') as f:
             f.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
         sftp.chmod(directory + '/latest.json.tmp', 0o644)
@@ -40,10 +40,11 @@ if __name__ == '__main__':
     parser.add_argument('--code', required=True, type=int)
     parser.add_argument('--version', required=True)
     parser.add_argument('--notes', required=True)
+    parser.add_argument('--server-logic', action='store_true', help='Repeat update reminders because server logic changed')
     parser.add_argument('--base', default='https://cyadmin.xyz/sharetime')
     args = parser.parse_args()
     with paramiko.SSHClient() as client:
         client.load_system_host_keys()
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
         client.connect(args.host, username=args.user, key_filename=args.key)
-        print(json.dumps(publish(client, args.apk, args.code, args.version, args.notes, args.base), ensure_ascii=False))
+        print(json.dumps(publish(client, args.apk, args.code, args.version, args.notes, args.base, args.server_logic), ensure_ascii=False))

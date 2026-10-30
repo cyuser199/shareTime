@@ -35,7 +35,7 @@ class ShareTimeApp : Application() {
 data class UiState(
     val url: String = "https://cyadmin.xyz/sharetime", val name: String = "", val registered: Boolean = false,
     val connected: Boolean = false, val paired: Boolean = false, val peerName: String = "好友",
-    val online: Boolean = false, val code: String = "", val codeUntil: Long = 0,
+    val pairingStatus: String = "", val online: Boolean = false, val code: String = "", val codeUntil: Long = 0,
     val pairRequest: String = "", val pairName: String = "", val fingerprint: String = "",
     val round: String = "", val phase: String = "", val initiator: Boolean = false,
     val submitted: Boolean = false, val peerSubmitted: Boolean = false, val deadline: Long = 0,
@@ -84,7 +84,8 @@ class Store(private val context: Context) {
     }
     private val mutable = MutableStateFlow(UiState(
         url = credentials.optString("url", "https://cyadmin.xyz/sharetime"), name = credentials.optString("name"),
-        registered = credentials.has("token"), paired = credentials.optString("certificate").isNotBlank()
+        registered = credentials.has("token"), paired = credentials.optString("certificate").isNotBlank(),
+        code = credentials.optString("fixedCode"), codeUntil = credentials.optLong("codeUntil")
     ))
     val state = mutable.asStateFlow()
     private val http = OkHttpClient.Builder().connectTimeout(12, TimeUnit.SECONDS)
@@ -143,6 +144,16 @@ class Store(private val context: Context) {
         catch (_: Exception) { message("本机记录未能保存，请检查剩余空间后重试") }
     } }
     private fun persist() { vault.write(credentials) }
+    fun switchServer(url: String) {
+        if (state.value.paired) { message("请先解除现有配对再切换服务器，本机记录会保留"); return }
+        val normalized = url.trim().trimEnd('/')
+        val uri = normalized.toUri()
+        if (uri.scheme != "https" || uri.host.isNullOrBlank() || uri.userInfo != null || uri.query != null || uri.fragment != null) { message("请输入有效的 HTTPS 服务器地址"); return }
+        ReceiveService.setEnabled(context, false)
+        reset()
+        credentials.put("url", normalized); persist()
+        mutable.update { it.copy(url = normalized) }
+    }
     fun register(url: String, name: String) {
         if (state.value.busy || state.value.registered || !Agreement.accepted(context)) return
         scope.launch {
@@ -204,7 +215,8 @@ class Store(private val context: Context) {
             override fun onOpen(ws: WebSocket, response: Response) {
                 retries = 0
                 ws.send(JSONObject().put("token", credentials.getString("token"))
-                    .put("certificate", credentials.optString("certificate").ifBlank { null }).toString())
+                    .put("certificate", credentials.optString("certificate").ifBlank { null })
+                    .put("pairingProtocol", 2).put("reservation", credentials.optString("reservation").ifBlank { null }).toString())
             }
             override fun onMessage(ws: WebSocket, text: String) {
                 if (socket !== ws) return
@@ -238,7 +250,7 @@ class Store(private val context: Context) {
     }
     fun command(type: String, extra: JSONObject = JSONObject()) {
         val sent = socket?.send(extra.put("type", type).toString()) ?: false
-        if (!sent || !state.value.connected) message("尚未连接服务器，请检查网络后重试")
+        if (!sent) message("尚未连接服务器，请检查网络后重试")
     }
     fun invite() { command("invite") }
     fun respond(accept: Boolean) {
@@ -287,6 +299,11 @@ class Store(private val context: Context) {
                     online = event.optBoolean("online"), peerName = peer?.optString("name") ?: "好友",
                     fingerprint = if (peerKey.isNotBlank()) Crypto.fingerprint(credentials.getString("publicKey"), peerKey) else "") }
             }
+            "fixed_code" -> {
+                credentials.put("fixedCode", event.getString("code")).put("reservation", event.getString("ticket")).put("codeUntil", event.getLong("expiresAt")); persist()
+                mutable.update { it.copy(code = event.getString("code"), codeUntil = event.getLong("expiresAt"), pairingStatus = "") }
+            }
+            "pair_waiting" -> mutable.update { it.copy(pairingStatus = event.optString("message"), busy = false) }
             "code" -> mutable.update { it.copy(code = event.getString("code"), codeUntil = System.currentTimeMillis() + event.getInt("expiresIn") * 1000L) }
             "pair_request" -> {
                 mutable.update { it.copy(pairRequest = event.getString("id"), pairName = event.getString("name")) }
@@ -294,13 +311,15 @@ class Store(private val context: Context) {
             }
             "paired" -> {
                 credentials.put("certificate", event.getString("certificate")); persist()
-                mutable.update { it.copy(paired = true, code = "", pairRequest = "") }
+                mutable.update { it.copy(paired = true, pairingStatus = "", pairRequest = "") }
+                command("paired_ack")
             }
             "unpaired" -> {
                 credentials.remove("certificate"); persist()
                 peerKey = ""
                 clearRound()
-                mutable.update { it.copy(paired = false, online = false, fingerprint = "", message = "配对已解除") }
+                mutable.update { it.copy(paired = false, online = false, fingerprint = "", message = "配对已解除", pairingStatus = "") }
+                command("reserve_fixed")
             }
             "round" -> {
                 if (event.getString("phase") == "complete" && state.value.history.any { it.id == event.getString("id") }) {
