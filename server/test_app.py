@@ -131,7 +131,7 @@ def test_pair_consent_fair_reveal_and_no_content_on_disk(tmp_path):
             # Ping is a processing barrier.
             b.send_json({'type': 'ping'}); receive(b, 'pong')
             assert rid not in app.state.relay.rounds
-            assert {p.name for p in tmp_path.iterdir()} == {'signing.key', 'stats.json'}
+            assert {p.name for p in tmp_path.iterdir()} == {'signing.key', 'stats.json', 'daily-stats.json'}
             assert json.loads((tmp_path / 'stats.json').read_text()) == {'registered_devices': 2}
 
 

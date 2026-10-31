@@ -398,7 +398,7 @@ class MainActivity : ComponentActivity() {
                                 Text("这条记录暂时无法读取", style = MaterialTheme.typography.titleMedium)
                                 Text("记录仍保存在本机，可重试读取。", style = MaterialTheme.typography.bodyMedium)
                                 OutlinedButton(onClick = { detailRetry++ }) { Text("重试读取") }
-                            } else JournalDetail(detail, viewportHeight = detailViewportHeight, frameName = frameName, onImage = { expandedImage = it })
+                            } else JournalDetail(detail, viewportHeight = detailViewportHeight, frameName = frameName, onImage = { expandedImage = it }, onExport = { save(it) })
                         } else if (historyBrowsing && state.round.isBlank()) {
                             JournalHome(state, LocalDate.parse(selectedDay), onDate = { showCalendar = true }, onToday = { selectedDay = LocalDate.now().toString() },
                                 onOpen = { selectedEntry = it }, onInvite = { requestNotifications(); store.invite() })

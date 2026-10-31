@@ -13,6 +13,7 @@ class FriendGroups:
         self.file = relay.directory / 'groups.json'
         self.groups = json.loads(self.file.read_text(encoding='utf-8')) if self.file.exists() else {}
         self.connections = {}
+        self.profiles = {}
         self.rounds = {}
 
     def save(self):
@@ -164,7 +165,9 @@ class FriendGroups:
                 r['eligible'] = r['participants'][:]
                 for member in excluded: await self.send(member, {'type':'ended','reason':'图片已开始提交，本轮加入已截止'})
             r['bodies'][uid] = bodies
-            if len(r['bodies']) == len(r['participants']): r['phase'] = 'complete'
+            if len(r['bodies']) == len(r['participants']):
+                r['phase'] = 'complete'
+                self.relay.metrics.completed({member: group['members'][member] for member in r['participants']})
         elif kind == 'group_retry':
             if uid not in r['participants']: raise ActionError('你未参加本轮')
             await self.state(uid)
@@ -189,7 +192,7 @@ class FriendGroups:
         group['code'],group['codeUntil'] = code, int((time.time()+3*86400)*1000)
         self.save()
 
-    async def connect(self, ws, device):
+    async def connect(self, ws, device, profile=None):
         from app import ActionError, MAX_BODY
         uid = device['id']
         try:
@@ -197,6 +200,8 @@ class FriendGroups:
                 if uid in self.connections: await self.connections[uid].close(code=4001)
                 if len(self.connections) >= 200: raise ActionError('服务器繁忙')
                 self.connections[uid]=ws
+                self.profiles[uid] = profile or device
+                self.relay.metrics.refresh({uid: self.profiles[uid]})
                 group=self.group(uid)
                 if group: await self.broadcast(group)
                 else: await self.state(uid)
@@ -213,5 +218,6 @@ class FriendGroups:
             async with self.relay.lock:
                 if self.connections.get(uid) is ws:
                     self.connections.pop(uid,None)
+                    self.profiles.pop(uid,None)
                     group=self.group(uid)
                     if group: await self.broadcast(group)

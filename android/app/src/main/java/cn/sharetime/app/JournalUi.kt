@@ -128,10 +128,10 @@ import java.util.Locale
     Text("历史记录仅加密保存在这台手机", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
-@Composable fun JournalDetail(record: JournalRecord?, viewportHeight: androidx.compose.ui.unit.Dp, frameName: String, onImage: (ByteArray) -> Unit) {
+@Composable fun JournalDetail(record: JournalRecord?, viewportHeight: androidx.compose.ui.unit.Dp, frameName: String, onImage: (ByteArray) -> Unit, onExport: (ByteArray) -> Unit) {
     if (record == null) { CircularProgressIndicator(); Text("正在读取本机记录…"); return }
     if (record.entry.mode == "friends") {
-        FriendRecordDetail(record, viewportHeight, frameName, onImage)
+        FriendRecordDetail(record, viewportHeight, frameName, onImage, onExport)
     } else {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(Instant.ofEpochMilli(record.entry.time).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M 月 d 日 · HH:mm", Locale.CHINA)),
@@ -141,6 +141,8 @@ import java.util.Locale
     val mine = record.mine
     val available = (viewportHeight - 70.dp).coerceAtLeast(160.dp)
     val imageHeight = if (record.others.isEmpty()) available / 2 else (available / 2).coerceAtLeast(220.dp)
+    val photos = listOfNotNull(mine?.let { LocalPhoto("我", it) }) + LocalPhoto(record.entry.peerName, record.peer) + record.others
+    PosterExportButton(record, photos, frameName, photoHeight = if (mine == null && record.others.isEmpty()) available else imageHeight, onExport = onExport)
     mine?.let { JournalImageCard(it, "我", frameName, Modifier.fillMaxWidth().height(imageHeight)) { onImage(it) } }
     JournalImageCard(record.peer, record.entry.peerName, frameName, Modifier.fillMaxWidth().height(if (mine == null && record.others.isEmpty()) available else imageHeight)) { onImage(record.peer) }
     record.others.forEach { photo -> JournalImageCard(photo.bytes, photo.name, frameName, Modifier.fillMaxWidth().height(imageHeight)) { onImage(photo.bytes) } }

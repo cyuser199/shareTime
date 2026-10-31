@@ -70,7 +70,7 @@ import java.time.format.DateTimeFormatter
     }
 }
 
-@Composable fun FriendRecordDetail(record: JournalRecord, viewportHeight: Dp, frameName: String, onImage: (ByteArray) -> Unit) {
+@Composable fun FriendRecordDetail(record: JournalRecord, viewportHeight: Dp, frameName: String, onImage: (ByteArray) -> Unit, onExport: (ByteArray) -> Unit) {
     val photos = listOfNotNull(record.mine?.let { LocalPhoto("我", it) }) + LocalPhoto(record.entry.peerName, record.peer) + record.others
     Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = .90f)) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -86,10 +86,9 @@ import java.time.format.DateTimeFormatter
             }
         }
     }
-    PhotoArrangement(record.entry.id, photos, viewportHeight, frameName, onImage)
+    PhotoArrangement(record, photos, viewportHeight, frameName, onImage, onExport)
 }
 
-private data class PhotoPosition(val x: Float, val y: Float, val size: Float)
 private fun trianglePositions(count: Int): List<PhotoPosition> = List(count) { i ->
     when {
         count == 1 -> PhotoPosition(.5f, .25f, .68f)
@@ -99,7 +98,8 @@ private fun trianglePositions(count: Int): List<PhotoPosition> = List(count) { i
     }
 }
 
-@Composable private fun PhotoArrangement(id: String, photos: List<LocalPhoto>, viewportHeight: Dp, frameName: String, onImage: (ByteArray) -> Unit) {
+@Composable private fun PhotoArrangement(record: JournalRecord, photos: List<LocalPhoto>, viewportHeight: Dp, frameName: String, onImage: (ByteArray) -> Unit, onExport: (ByteArray) -> Unit) {
+    val id = record.entry.id
     val prefs = LocalContext.current.getSharedPreferences("photo-arrangements", android.content.Context.MODE_PRIVATE)
     var layout by remember(id) { mutableStateOf(prefs.getString("$id-mode", "vertical") ?: "vertical") }
     var positions by remember(id, photos.size) { mutableStateOf(runCatching {
@@ -116,6 +116,12 @@ private fun trianglePositions(count: Int): List<PhotoPosition> = List(count) { i
             FilterChip(selected = layout == key, onClick = { layout = key; prefs.edit().putString("$id-mode", key).apply() }, label = { Text(label) })
         }
     }
+    val available = (viewportHeight - 150.dp).coerceAtLeast(200.dp)
+    val photoHeight = if (photos.size <= 2) available / photos.size else (available * .72f).coerceIn(240.dp, 440.dp)
+    val canvasHeight = (viewportHeight - 200.dp).coerceIn(400.dp, 680.dp)
+    PosterExportButton(record, photos, frameName, layout,
+        if (layout == "triangle") trianglePositions(photos.size) else positions,
+        canvasHeight, photoHeight, onExport)
     if (layout == "vertical") {
         VerticalFriendPhotos(photos, viewportHeight, frameName, onImage)
         return
@@ -134,16 +140,17 @@ private fun trianglePositions(count: Int): List<PhotoPosition> = List(count) { i
     }
     val density = LocalDensity.current
     Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .35f)) {
-        BoxWithConstraints(Modifier.fillMaxWidth().height((viewportHeight - 200.dp).coerceIn(400.dp, 680.dp))) {
+        BoxWithConstraints(Modifier.fillMaxWidth().height(canvasHeight)) {
             val widthPx = with(density) { maxWidth.toPx() }
             val heightPx = with(density) { maxHeight.toPx() }
             val shown = if (layout == "triangle") trianglePositions(photos.size) else positions
             shown.forEachIndexed { i, p ->
-                val w = maxWidth * p.size
-                val h = (maxHeight * p.size).coerceAtMost(maxHeight * .85f)
+                val box = PosterLayout.box(maxWidth.value, maxHeight.value, p)
+                val w = box.width.dp
+                val h = box.height.dp
                 val freeX = (widthPx - with(density) { w.toPx() }).coerceAtLeast(1f)
                 val freeY = (heightPx - with(density) { h.toPx() }).coerceAtLeast(1f)
-                val position = Modifier.offset { IntOffset((freeX * p.x).roundToInt(), (freeY * p.y).roundToInt()) }.size(w, h)
+                val position = Modifier.offset { IntOffset(with(density) { box.x.dp.roundToPx() }, with(density) { box.y.dp.roundToPx() }) }.size(w, h)
                 val interaction = if (layout == "custom") Modifier.pointerInput(id, i, freeX, freeY) {
                     detectDragGestures(onDragStart = { selected = i }, onDragEnd = { savePositions() }, onDragCancel = { savePositions() }) { change, amount ->
                         change.consume()

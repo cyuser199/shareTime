@@ -256,6 +256,8 @@ class Store(private val context: Context) {
                 }
                 ws.send(JSONObject().put("token", credentials.getString("token"))
                     .put("certificate", credentials.optString("certificate").ifBlank { null })
+                    .put("privacyVersion", Agreement.VERSION)
+                    .put("deviceModel", listOf(android.os.Build.MANUFACTURER, android.os.Build.MODEL).distinct().joinToString(" ").take(80))
                     .put("mode", state.value.mode).put("pairingProtocol", 2).put("reservation", credentials.optString("reservation").ifBlank { null }).toString())
             }
             override fun onMessage(ws: WebSocket, text: String) {

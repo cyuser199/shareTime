@@ -22,6 +22,8 @@ from urllib.parse import urlencode
 from pydantic import BaseModel, Field
 from pairing import PairingRegistry
 from groups import FriendGroups
+from metrics import DailyMetrics
+from dashboard import mount_dashboard
 
 class ActionError(ValueError):
     """A safe, user-facing operation failure."""
@@ -46,6 +48,7 @@ class Relay:
             with os.fdopen(fd, 'wb') as f:
                 f.write(secrets.token_bytes(32))
         self.key = keyfile.read_bytes()
+        self.metrics = DailyMetrics(self.directory, self.key)
         statsfile = self.directory / 'stats.json'
         self.stats = json.loads(statsfile.read_text()) if statsfile.exists() else {'registered_devices': 0}
         self.connections = {}
@@ -111,6 +114,9 @@ class Relay:
             await self.broadcast_pair(pair, {'type': 'ended', 'reason': reason})
 
     async def sweep(self):
+        profiles = {uid: connection.get('profile', connection['device']) for uid, connection in self.connections.items()}
+        profiles.update({uid: self.friends.profiles.get(uid, {}) for uid in self.friends.connections})
+        self.metrics.refresh(profiles)
         self.registry.clean()
         await self.friends.sweep()
         now = time.monotonic()
@@ -279,6 +285,7 @@ class Relay:
             record['bodies'][uid] = body
             if len(record['bodies']) == 2:
                 record['phase'] = 'complete'
+                self.metrics.completed(pair['members'])
         elif kind == 'ack':
             if record['phase'] == 'complete':
                 record['acked'].add(uid)
@@ -314,6 +321,7 @@ def create_app(directory=None):
 
     app = FastAPI(title='ShareTime', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.relay = relay
+    mount_dashboard(app, relay)
 
     @app.get('/health')
     async def health():
@@ -400,8 +408,16 @@ def create_app(directory=None):
                 raise ValueError('Invalid authentication')
             device = relay.verify(auth.get('token', ''), 'device')
             uid = device['id']
+            # Diagnostic metadata is not part of signed pairing identity.
+            model = auth.get('deviceModel')
+            if not isinstance(model, str) or len(model) > 80:
+                model = None
+            version = auth.get('privacyVersion')
+            if not isinstance(version, int) or isinstance(version, bool) or not 0 <= version <= 1000:
+                version = 0
+            profile = {**device, 'deviceModel': model, 'privacyVersion': version}
             if auth.get('mode') == 'friends':
-                await relay.friends.connect(ws, device)
+                await relay.friends.connect(ws, device, profile)
                 return
             async with relay.lock:
                 await relay.sweep()
@@ -409,7 +425,8 @@ def create_app(directory=None):
                     raise ActionError('服务器繁忙')
                 if uid in relay.connections:
                     await relay.connections[uid]['ws'].close(code=4001)
-                relay.connections[uid] = {'ws': ws, 'device': device}
+                relay.connections[uid] = {'ws': ws, 'device': device, 'profile': profile}
+                relay.metrics.refresh({uid: profile})
                 certificate = auth.get('certificate')
                 if certificate:
                     pair = relay.verify(certificate, 'pair')
