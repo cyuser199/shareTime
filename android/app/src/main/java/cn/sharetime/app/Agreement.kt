@@ -3,11 +3,11 @@ package cn.sharetime.app
 import android.content.Context
 
 object Agreement {
-    const val VERSION = 7
+    const val VERSION = 8
     fun accepted(context: Context) = context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getInt("agreement", 0) == VERSION
     fun accept(context: Context) { context.getSharedPreferences("preferences", Context.MODE_PRIVATE).edit().putInt("agreement", VERSION).apply() }
     val text = """
-        此刻 · 使用协议与隐私说明（草案 v7）
+        此刻 · 使用协议与隐私说明（草案 v8）
         更新日期：2026 年 11 月 1 日
 
         本软件由CY个人开发，用于好友自愿分享生活记录，支持双人模式及最多 5 人的好友群组。
@@ -25,6 +25,7 @@ object Agreement {
         在应用前台且尚未配对时，会识别剪贴板中带有此刻标记的好友口令，再由你确认是否申请配对。其他剪贴板内容不会上传。打开应用或点击检查更新时，会向当前服务器获取版本信息；下载和安装需要你的操作。
 
         4. 服务边界
+        同意本说明并开启后台接收后，具备可用 Google Play 服务的设备会尝试使用 Google Firebase Cloud Messaging（FCM）辅助接收提醒。Google 会处理推送所需的安装标识、推送令牌及网络技术信息；服务器保存设备与推送令牌、当前模式的对应关系，用于向本设备发送邀请和记录更新提醒，登记超过 30 天未刷新后清理，关闭后台接收或重置身份时请求删除。推送仅含事件类型和不透明去重标记，不含图片、昵称、配对码或图片解密密钥；图片仍通过原服务器端到端加密交换。Google 服务或推送注册不可用时自动使用原有后台长连接，不自动安装 Google 服务；当前未接入小米等厂商推送。推送服务的可达性受所在网络影响。关闭后台接收会停止使用 FCM，并取消服务器登记；断网时取消登记可能延后，本机仍忽略提醒。不接入 Firebase Analytics 分析功能。详情见 https://firebase.google.com/support/privacy 。
         这是个人开发的测试软件，不承诺全天候在线或通知必达。断网、关机、强制停止、系统省电或服务器停机均可能造成延迟或内容丢失，请自行保存重要记录。当前版本通过互联网连接云服务器，请保持网络可用。
 
         5. 你的选择

@@ -370,7 +370,7 @@ class MainActivity : ComponentActivity() {
                             }
                             if (state.registered) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Column(Modifier.weight(1f)) { Text("保持接收邀请"); Text("显示持续通知；系统省电仍可能影响送达", style = MaterialTheme.typography.bodySmall) }
+                                    Column(Modifier.weight(1f)) { Text("保持接收邀请"); Text("自动选择可用推送渠道，长连接使用静默持续通知", style = MaterialTheme.typography.bodySmall) }
                                     Switch(modifier = Modifier.semantics { contentDescription = "保持接收邀请" }, checked = state.keepReceiving, onCheckedChange = { enabled ->
                                         if (enabled) {
                                             requestNotifications()
@@ -378,6 +378,7 @@ class MainActivity : ComponentActivity() {
                                         } else ReceiveService.setEnabled(this@MainActivity, false)
                                     })
                                 }
+                                Text("接收渠道：${state.pushChannel}", style = MaterialTheme.typography.bodySmall)
                                 OutlinedButton(onClick = { requestNotifications(); startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)) }) { Text("系统通知设置") }
                             }
                             if (state.fingerprint.isNotBlank()) {

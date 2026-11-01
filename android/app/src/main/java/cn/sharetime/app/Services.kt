@@ -71,7 +71,7 @@ class ReceiveService : Service() {
         fun restore(context: Context) {
             if (enabled(context) && Agreement.accepted(context) && (context.applicationContext as ShareTimeApp).store.state.value.registered) {
                 try { ContextCompat.startForegroundService(context, Intent(context, ReceiveService::class.java)) }
-                catch (_: IllegalStateException) { /* System may defer background starts until the next foreground visit. */ }
+                catch (_: RuntimeException) { /* Background start may be restricted; the invitation notification still works. */ }
             }
         }
     }
@@ -94,7 +94,7 @@ class ReceiveService : Service() {
                     }
                 }
             }
-            while (isActive) { delay(20_000); store.ensureConnected() }
+            while (isActive) { delay(20_000); store.ensureConnected(); store.refreshPush() }
         }
         return START_STICKY
     }

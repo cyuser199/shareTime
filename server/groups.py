@@ -138,6 +138,8 @@ class FriendGroups:
                 'eligible':eligible, 'accepted':[uid], 'participants':[uid], 'expires':time.monotonic()+600, 'bodies':{}, 'acked':set()}
             if obj.get('async'):
                 self.rounds[group['id']].update({'async':True,'recipients':eligible[:], 'declined':set(), 'delivered':{}, 'counted':set(), 'expires':time.monotonic()+86400})
+            for member in eligible:
+                if member != uid: self.relay.push.notify(member, 'friends', 'invite', self.rounds[group['id']]['id'])
             await self.broadcast(group)
             return
         r = self.rounds.get(group['id'])
@@ -180,6 +182,8 @@ class FriendGroups:
                 r['eligible'] = r['participants'][:]
                 for member in excluded: await self.send(member, {'type':'ended','reason':'图片已开始提交，本轮加入已截止'})
             r['bodies'][uid] = bodies
+            for member in r['participants']:
+                if member != uid: self.relay.push.notify(member, 'friends', 'records', r['id'], len(r['bodies']))
             if len(r['bodies']) == len(r['participants']):
                 r['phase'] = 'complete'
                 self.relay.metrics.completed({member: group['members'][member] for member in r['participants']})
@@ -270,6 +274,8 @@ class FriendGroups:
             used = sum(len(body) for record in self.rounds.values() for payload in record['bodies'].values() for body in payload.values()) + sum(len(body) for record in self.relay.rounds.values() for body in record['bodies'].values())
             if used + sum(map(len, bodies.values())) > 128 * 1024 * 1024: raise ActionError('中转空间暂满，请稍后重试')
             r['bodies'][uid] = bodies
+            for member in r['bodies']:
+                if member != uid: self.relay.push.notify(member, 'friends', 'records', r['id'], len(r['bodies']))
         elif kind == 'ack':
             revision = obj.get('revision', 0)
             if uid in r['bodies'] and isinstance(revision,int) and 2 <= revision <= len(r['bodies']):

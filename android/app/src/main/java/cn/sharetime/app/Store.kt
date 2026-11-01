@@ -16,6 +16,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -48,6 +50,7 @@ data class UiState(
     val submitted: Boolean = false, val peerSubmitted: Boolean = false, val deadline: Long = 0,
     val preview: ByteArray? = null, val received: ByteArray? = null,
     val busy: Boolean = false, val message: String = "", val keepReceiving: Boolean = false,
+    val pushChannel: String = "后台长连接",
     val history: List<JournalEntry> = emptyList(), val background: ByteArray? = null,
     val newEntryId: String = "", val completionOrdinal: Int = 0
 )
@@ -113,6 +116,43 @@ class Store(private val context: Context) {
     private var retries = 0
     private var peerKey = ""
     private var lastNotified = ""
+    private val pushChannels = PushChannels(context) { text -> mutable.update { it.copy(pushChannel = text) } }
+    private val pushUploadLock = Mutex()
+
+    fun refreshPush(force: Boolean = false) {
+        if (!state.value.registered || !Agreement.accepted(context) || !ReceiveService.enabled(context)) return
+        val url = state.value.url
+        val token = credentials.optString("token")
+        val mode = state.value.mode
+        pushChannels.refresh("$url:$token:$mode", force, serverReady = {
+            http.newCall(Request.Builder().url("$url/push/config").build()).execute().use { response ->
+                response.isSuccessful && JSONObject(response.body?.string() ?: "{}").optBoolean("enabled")
+            }
+        }) { pushToken ->
+            pushUploadLock.withLock {
+            if (!ReceiveService.enabled(context) || state.value.url != url || state.value.mode != mode || credentials.optString("token") != token) return@withLock false
+            val body = JSONObject().put("provider", "fcm").put("pushToken", pushToken)
+                .put("mode", mode).put("privacyVersion", Agreement.VERSION)
+            http.newCall(Request.Builder().url("$url/push/device").header("Authorization", "Bearer $token")
+                .post(body.toString().toRequestBody("application/json".toMediaType())).build()).execute().use { response ->
+                response.isSuccessful && JSONObject(response.body?.string() ?: "{}").optBoolean("enabled")
+            }
+            }
+        }
+    }
+    fun disablePush(detachIdentity: Boolean = false) {
+        pushChannels.stop()
+        val url = state.value.url
+        val token = credentials.optString("token")
+        if (token.isBlank()) return
+        scope.launch {
+            pushUploadLock.withLock {
+            if (!detachIdentity && ReceiveService.enabled(context)) return@withLock
+            runCatching { http.newCall(Request.Builder().url("$url/push/device").header("Authorization", "Bearer $token")
+                .post("{\"provider\":\"none\"}".toRequestBody("application/json".toMediaType())).build()).execute().close() }
+            }
+        }
+    }
 
     init {
         scope.launch {
@@ -214,6 +254,7 @@ class Store(private val context: Context) {
                 mutable.update { it.copy(url = normalized, name = name.trim(), registered = true, me = credentials.getString("id")) }
                 connect()
                 ReceiveService.restore(context)
+                refreshPush()
             } catch (e: Exception) { message(e.message?.take(100) ?: "连接失败，请检查服务器地址与网络") }
             finally { mutable.update { it.copy(busy = false) } }
         }
@@ -223,6 +264,7 @@ class Store(private val context: Context) {
         Notices.dismiss(context)
         backgroundClose?.cancel()
         connect()
+        refreshPush()
     }
     fun onBackground() {
         foreground = false
@@ -235,6 +277,7 @@ class Store(private val context: Context) {
     fun keepReceiving(enabled: Boolean) {
         mutable.update { it.copy(keepReceiving = enabled) }
         if (enabled) connect() else if (!foreground && state.value.round.isBlank()) disconnect()
+        if (enabled) refreshPush() else if (!ReceiveService.enabled(context)) disablePush()
     }
     @Synchronized private fun networkAvailable(available: android.net.Network) {
         if (network == available) return
@@ -329,6 +372,7 @@ class Store(private val context: Context) {
         network = connectivity.activeNetwork
         mutable.update { it.copy(connected = false, online = false, busy = false) }
         connect()
+        refreshPush(true)
         if (network == null) message("当前没有可用网络，恢复后会自动连接")
     }
     fun switchMode(mode: String) {
@@ -341,6 +385,7 @@ class Store(private val context: Context) {
             online = false, peerName = "好友", fingerprint = "", groupMembers = emptyList(), groupCode = "", pairingStatus = "",
             round = "", phase = "", parked = false, asynchronous = false, submitted = false, peerSubmitted = false, preview = null, received = null, accepted = emptyList(), participants = emptyList()) }
         connect()
+        refreshPush(true)
     }
     fun leaveGroup() { command("group_leave") }
     fun invite() {
@@ -393,6 +438,7 @@ class Store(private val context: Context) {
     fun reset() {
         if (state.value.paired) { message("请先解除配对"); return }
         disconnect()
+        disablePush(detachIdentity = true)
         val url = state.value.url
         credentials = JSONObject().put("url", url)
         persist()

@@ -24,6 +24,7 @@ from pairing import PairingRegistry
 from groups import FriendGroups
 from metrics import DailyMetrics
 from dashboard import mount_dashboard
+from push import PushRegistry
 
 class ActionError(ValueError):
     """A safe, user-facing operation failure."""
@@ -61,6 +62,7 @@ class Relay:
         self.lock = asyncio.Lock()
         self.registry = PairingRegistry(self)
         self.friends = FriendGroups(self)
+        self.push = PushRegistry(self.directory)
 
     def sign(self, obj):
         body = b64(json.dumps(obj, separators=(',', ':'), ensure_ascii=False).encode())
@@ -117,6 +119,7 @@ class Relay:
         profiles.update({uid: self.friends.profiles.get(uid, {}) for uid in self.friends.connections})
         self.metrics.refresh(profiles)
         self.registry.clean()
+        self.push.clean()
         await self.friends.sweep()
         now = time.monotonic()
         self.codes = {k: v for k, v in self.codes.items() if v['expires'] > now}
@@ -255,6 +258,8 @@ class Relay:
                       'expires': time.monotonic() + INVITE_TTL, 'bodies': {}, 'acked': set(), 'async': bool(obj.get('async'))}
             self.rounds[rid] = record
             for member in pair['members']:
+                if member != uid: self.push.notify(member, 'duo', 'invite', rid)
+            for member in pair['members']:
                 await self.state(member)
             return
         record = self.rounds.get(obj.get('id'))
@@ -284,6 +289,8 @@ class Relay:
             used = sum(len(value) for r in self.rounds.values() for value in r['bodies'].values()) + sum(len(value) for r in self.friends.rounds.values() for payload in r['bodies'].values() for value in payload.values())
             if used + len(body) > 128 * 1024 * 1024: raise ActionError('中转空间暂满，请稍后重试')
             record['bodies'][uid] = body
+            for member in pair['members']:
+                if member != uid: self.push.notify(member, 'duo', 'records', record['id'], len(record['bodies']))
             if len(record['bodies']) == 2:
                 record['phase'] = 'complete'
                 self.metrics.completed(pair['members'])
@@ -314,7 +321,11 @@ def create_app(directory=None):
                 async with relay.lock:
                     await relay.sweep()
         task = asyncio.create_task(cleanup())
+        push_task = asyncio.create_task(relay.push.worker())
         yield
+        push_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await push_task
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
@@ -323,6 +334,35 @@ def create_app(directory=None):
     app = FastAPI(title='ShareTime', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.relay = relay
     mount_dashboard(app, relay)
+
+    class PushRegistration(BaseModel):
+        provider: str = Field(pattern='^(fcm|none)$')
+        pushToken: str = Field(default='', max_length=4096)
+        mode: str = Field(default='duo', pattern='^(duo|friends)$')
+        privacyVersion: int = 0
+
+    @app.get('/push/config')
+    async def push_config():
+        return {'enabled': relay.push.enabled, 'provider': 'fcm' if relay.push.enabled else 'connection'}
+
+    @app.post('/push/device')
+    async def push_device(body: PushRegistration, request: Request):
+        try:
+            header = request.headers.get('authorization', '')
+            if not header.startswith('Bearer '): raise ValueError()
+            device = relay.verify(header[7:], 'device')
+        except ValueError:
+            raise HTTPException(401, 'Invalid credential') from None
+        async with relay.lock:
+            if relay.limited('push:' + device['id'], 30): raise HTTPException(429)
+            if body.provider == 'none':
+                relay.push.remove(device['id'])
+            else:
+                if body.privacyVersion < 8 or not 20 <= len(body.pushToken) <= 4096 or any(c.isspace() for c in body.pushToken):
+                    raise HTTPException(400, 'Push consent and valid token required')
+                try: relay.push.register(device['id'], body.pushToken, body.mode)
+                except ValueError: raise HTTPException(503, 'Push registry full') from None
+            return {'enabled': relay.push.enabled, 'provider': 'fcm' if relay.push.enabled else 'connection'}
 
     @app.get('/health')
     async def health():
