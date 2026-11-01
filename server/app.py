@@ -103,8 +103,7 @@ class Relay:
         return next((r for r in self.rounds.values() if r['pair'] == pair), None)
 
     async def broadcast_pair(self, pair, event):
-        for member in pair['members']:
-            await self.send(member, event)
+        await asyncio.gather(*(self.send(member, event) for member in pair['members']))
 
     async def close_round(self, record, reason):
         record['bodies'].clear()
@@ -135,16 +134,16 @@ class Relay:
     async def state(self, device):
         pair = self.pair_for(device)
         if not pair:
-            await self.send(device, {'type': 'state', 'paired': False})
+            await self.send(device, {'type': 'state', 'paired': False, 'activeRound': None})
             return
         peer = next(m for m in pair['members'] if m != device)
         await self.send(device, {'type': 'state', 'paired': True, 'online': peer in self.connections,
-                                 'peer': pair['members'][peer]})
+                                 'peer': pair['members'][peer], 'activeRound': (self.round_for(pair['id']) or {}).get('id')})
         record = self.round_for(pair['id'])
         if record:
             event = {'type': 'round', 'id': record['id'], 'phase': record['phase'],
                      'initiator': record['initiator'], 'submitted': list(record['bodies']),
-                     'remaining': max(0, int(record['expires'] - time.monotonic()))}
+                     'async': record.get('async', False), 'remaining': max(0, int(record['expires'] - time.monotonic()))}
             await self.send(device, event)
             if record['phase'] == 'complete':
                 await self.deliver(record, device)
@@ -245,7 +244,7 @@ class Relay:
             if current:
                 if current['phase'] == 'waiting' and current['initiator'] != uid:
                     current['phase'] = 'active'  # Simultaneous invitations are mutual consent.
-                    current['expires'] = time.monotonic() + ROUND_TTL
+                    current['expires'] = time.monotonic() + (INVITE_TTL if current.get('async') else ROUND_TTL)
                 for member in pair['members']:
                     await self.state(member)
                 return
@@ -253,7 +252,7 @@ class Relay:
                 raise ActionError('服务器繁忙')
             rid = secrets.token_urlsafe(24)
             record = {'id': rid, 'pair': pair['id'], 'initiator': uid, 'phase': 'waiting',
-                      'expires': time.monotonic() + INVITE_TTL, 'bodies': {}, 'acked': set()}
+                      'expires': time.monotonic() + INVITE_TTL, 'bodies': {}, 'acked': set(), 'async': bool(obj.get('async'))}
             self.rounds[rid] = record
             for member in pair['members']:
                 await self.state(member)
@@ -271,9 +270,9 @@ class Relay:
                 await self.close_round(record, '对方暂时不方便')
                 return
             record['phase'] = 'active'
-            record['expires'] = time.monotonic() + ROUND_TTL
+            record['expires'] = time.monotonic() + (INVITE_TTL if record.get('async') else ROUND_TTL)
         elif kind == 'submit':
-            if record['phase'] != 'active' or uid in record['bodies']:
+            if (record['phase'] != 'active' and not (record.get('async') and record['phase'] == 'waiting' and uid == record['initiator'])) or uid in record['bodies']:
                 raise ActionError('请等待好友同意，或你已经提交')
             body = obj.get('body')
             if not isinstance(body, str) or len(body) < 40 or len(body) > MAX_BODY:
@@ -282,6 +281,8 @@ class Relay:
                 base64.b64decode(body, validate=True)
             except ValueError:
                 raise ActionError('无效图片数据') from None
+            used = sum(len(value) for r in self.rounds.values() for value in r['bodies'].values()) + sum(len(value) for r in self.friends.rounds.values() for payload in r['bodies'].values() for value in payload.values())
+            if used + len(body) > 128 * 1024 * 1024: raise ActionError('中转空间暂满，请稍后重试')
             record['bodies'][uid] = body
             if len(record['bodies']) == 2:
                 record['phase'] = 'complete'
@@ -417,7 +418,7 @@ def create_app(directory=None):
                 version = 0
             profile = {**device, 'deviceModel': model, 'privacyVersion': version}
             if auth.get('mode') == 'friends':
-                await relay.friends.connect(ws, device, profile)
+                await relay.friends.connect(ws, device, profile, 2 if auth.get('recordProtocol') == 2 else 1)
                 return
             async with relay.lock:
                 await relay.sweep()
@@ -446,7 +447,7 @@ def create_app(directory=None):
                         if member != uid:
                             await relay.state(member)
             while True:
-                raw = await asyncio.wait_for(ws.receive_text(), 90)
+                raw = await asyncio.wait_for(ws.receive_text(), 15)
                 if len(raw) > MAX_BODY + 1024:
                     raise ActionError('数据过大')
                 try:

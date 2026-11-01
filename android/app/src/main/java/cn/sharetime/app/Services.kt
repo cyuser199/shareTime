@@ -1,5 +1,7 @@
 package cn.sharetime.app
 
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
 import android.Manifest
 import android.app.*
 import android.content.Context
@@ -32,15 +34,18 @@ object Notices {
     private fun open(context: Context): PendingIntent = PendingIntent.getActivity(context, 0,
         Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-    fun notification(context: Context, text: String, ongoing: Boolean = false): Notification {
+    fun notification(context: Context, text: String, ongoing: Boolean = false, reconnect: Boolean = false): Notification {
         channels(context)
-        return NotificationCompat.Builder(context, if (ongoing) "connection" else "invitations")
+        val builder = NotificationCompat.Builder(context, if (ongoing) "connection" else "invitations")
             .setSmallIcon(R.drawable.ic_notification).setContentTitle("此刻").setContentText(text)
             .setSilent(ongoing).setOnlyAlertOnce(ongoing)
             .setContentIntent(open(context)).setOngoing(ongoing).setAutoCancel(!ongoing)
             .setPriority(if (ongoing) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_HIGH)
             .setCategory(if (ongoing) NotificationCompat.CATEGORY_SERVICE else NotificationCompat.CATEGORY_MESSAGE)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build()
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+        if (reconnect) builder.addAction(0, "重新连接", PendingIntent.getService(context, 10,
+            Intent(context, ReceiveService::class.java).setAction("reconnect"), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        return builder.build()
     }
     fun invitation(context: Context, text: String) {
         if (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
@@ -50,6 +55,10 @@ object Notices {
 }
 
 class ReceiveService : Service() {
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var monitor: Job? = null
+    private var lastText = ""
+
     companion object {
         fun enabled(context: Context) = context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("receive", true)
         fun setEnabled(context: Context, enabled: Boolean) {
@@ -69,12 +78,32 @@ class ReceiveService : Service() {
     override fun onBind(intent: Intent?) = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!Agreement.accepted(this) || !enabled(this)) { stopSelf(); return START_NOT_STICKY }
-        ServiceCompat.startForeground(this, 100, Notices.notification(this, "正在等待好友邀请 · 点按返回应用", true),
+        val store = (application as ShareTimeApp).store
+        val status = if (store.state.value.connected) "已连接服务器 · 后台接收邀请" else "正在连接服务器 · 自动重连"
+        ServiceCompat.startForeground(this, 100, Notices.notification(this, status, true, true),
             if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0)
-        (application as ShareTimeApp).store.keepReceiving(true)
+        store.keepReceiving(true)
+        if (intent?.action == "reconnect") store.reconnectNow()
+        if (monitor == null) monitor = serviceScope.launch {
+            launch {
+                store.state.collect { state ->
+                    val text = if (state.connected) "已连接服务器 · 后台接收邀请" else "连接已断开 · 自动重连中"
+                    if (text != lastText) {
+                        lastText = text
+                        getSystemService(NotificationManager::class.java).notify(100, Notices.notification(this@ReceiveService, text, true, true))
+                    }
+                }
+            }
+            while (isActive) { delay(20_000); store.ensureConnected() }
+        }
         return START_STICKY
     }
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (enabled(this)) (application as ShareTimeApp).store.ensureConnected()
+        super.onTaskRemoved(rootIntent)
+    }
     override fun onDestroy() {
+        serviceScope.cancel()
         (application as ShareTimeApp).store.keepReceiving(false)
         super.onDestroy()
     }

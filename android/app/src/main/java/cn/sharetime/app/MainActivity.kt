@@ -290,7 +290,7 @@ class MainActivity : ComponentActivity() {
             var deleteEntry by rememberSaveable { mutableStateOf(false) }
             var detailRetry by remember { mutableIntStateOf(0) }
             var detailLoading by remember { mutableStateOf(false) }
-            val detail by produceState<JournalRecord?>(null, selectedEntry, detailRetry) {
+            val detail by produceState<JournalRecord?>(null, selectedEntry, detailRetry, state.history) {
                 value = null
                 val id = selectedEntry
                 detailLoading = id != null
@@ -311,10 +311,10 @@ class MainActivity : ComponentActivity() {
                     store.consumeCompletion()
                 }
             }
-            LaunchedEffect(state.round) {
+            LaunchedEffect(state.round, state.parked) {
                 expandedImage = null
                 confirmEnd = false
-                if (state.round.isNotBlank()) {
+                if (state.round.isNotBlank() && !state.parked) {
                     selectedEntry = null; settings = false; historyBrowsing = false
                     showCalendar = false; showCelebration = false
                 }
@@ -322,12 +322,12 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(state.message) {
                 if (state.message.isNotBlank()) { snackbar.showSnackbar(state.message); store.clearMessage() }
             }
-            BackHandler(enabled = settings || state.round.isNotBlank() || expandedImage != null || selectedEntry != null || historyBrowsing) {
+            BackHandler(enabled = settings || (state.round.isNotBlank() && !state.parked) || expandedImage != null || selectedEntry != null || historyBrowsing) {
                 when {
                     expandedImage != null -> expandedImage = null
                     selectedEntry != null -> selectedEntry = null
                     settings -> settings = false
-                    state.round.isNotBlank() -> confirmEnd = true
+                    state.round.isNotBlank() && !state.parked -> store.parkRound()
                     else -> historyBrowsing = false
                 }
             }
@@ -340,7 +340,7 @@ class MainActivity : ComponentActivity() {
                     navigationIcon = { if (selectedEntry != null) TextButton(onClick = { selectedEntry = null }) { Text("返回") } },
                     actions = {
                         if (selectedEntry != null) TextButton(onClick = { frameSettings = true }) { Text("相框") }
-                        if (selectedEntry == null && (state.paired || state.history.isNotEmpty())) TextButton(onClick = { showCalendar = true }, enabled = state.round.isBlank()) { Text("日历") }
+                        if (selectedEntry == null && (state.paired || state.history.isNotEmpty())) TextButton(onClick = { showCalendar = true }, enabled = state.round.isBlank() || state.parked) { Text("日历") }
                         if (selectedEntry == null) TextButton(onClick = { settings = !settings }) { Text(if (settings) "完成" else "设置") }
                     }) },
                 snackbarHost = { SnackbarHost(snackbar) },
@@ -399,12 +399,12 @@ class MainActivity : ComponentActivity() {
                                 Text("记录仍保存在本机，可重试读取。", style = MaterialTheme.typography.bodyMedium)
                                 OutlinedButton(onClick = { detailRetry++ }) { Text("重试读取") }
                             } else JournalDetail(detail, viewportHeight = detailViewportHeight, frameName = frameName, onImage = { expandedImage = it }, onExport = { save(it) })
-                        } else if (historyBrowsing && state.round.isBlank()) {
+                        } else if (historyBrowsing && (state.round.isBlank() || state.parked)) {
                             JournalHome(state, LocalDate.parse(selectedDay), onDate = { showCalendar = true }, onToday = { selectedDay = LocalDate.now().toString() },
                                 onOpen = { selectedEntry = it }, onInvite = { requestNotifications(); store.invite() })
                         } else if (!state.registered) {
                             Registration(state)
-                        } else if (state.mode == "friends" && state.round.isBlank()) {
+                        } else if (state.mode == "friends" && (state.round.isBlank() || state.parked)) {
                             FriendPanel(state, store) { code ->
                                 (getSystemService(ClipboardManager::class.java)).setPrimaryClip(ClipData.newPlainText("好友群组码", code))
                                 store.message("已复制好友群组码")
@@ -413,7 +413,7 @@ class MainActivity : ComponentActivity() {
                                 onOpen = { selectedEntry = it }, onInvite = { requestNotifications(); store.invite() })
                         } else if (!state.paired) {
                             Pairing(state)
-                        } else if (state.round.isBlank()) {
+                        } else if (state.round.isBlank() || state.parked) {
                             JournalHome(state, LocalDate.parse(selectedDay), onDate = { showCalendar = true }, onToday = { selectedDay = LocalDate.now().toString() },
                                 onOpen = { selectedEntry = it }, onInvite = { requestNotifications(); store.invite() })
                         } else {
@@ -559,10 +559,10 @@ class MainActivity : ComponentActivity() {
                 TextButton(onClick = { pickerRound = state.round; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !state.busy) { Text("选择手机自带截图 / 图片") }
             }
             state.preview?.let { bytes -> Picture(bytes, Modifier.fillMaxWidth().height(260.dp).clickable { onImage(bytes) }) }
-            Button(onClick = { store.submit() }, enabled = state.connected && !awaiting && !state.submitted && !state.busy && state.preview != null && (state.mode != "friends" || state.participants.size >= 2),
-                modifier = Modifier.fillMaxWidth()) { Text(when { state.submitted -> "已提交，等待好友"; state.busy -> "正在处理…"; awaiting -> "对方同意后可提交"; else -> "确认提交" }) }
+            Button(onClick = { store.submit() }, enabled = state.connected && (!awaiting || (state.asynchronous && state.initiator)) && !state.submitted && !state.busy && state.preview != null && (state.mode != "friends" || state.asynchronous || state.participants.size >= 2),
+                modifier = Modifier.fillMaxWidth()) { Text(when { state.submitted -> "已提交，等待好友"; state.busy -> "正在处理…"; awaiting && !state.asynchronous -> "对方同意后可提交"; else -> "确认提交" }) }
             Text(if (state.peerSubmitted) "好友已提交" else "好友尚未提交", style = MaterialTheme.typography.bodySmall)
-            Text(if (state.mode == "friends") if (state.rosterLocked) "本轮 ${state.participants.size} 人，全部提交后一起展示。" else "已加入 ${state.participants.size} 人，可先准备图片。首次提交后停止加入，至少两人参加。" else "双方均提交后，才会互相展示。", style = MaterialTheme.typography.bodySmall)
+            Text(if (state.mode == "friends") if (state.asynchronous) "可先提交并返回主页，其他好友可在剩余时间内上线加入；新内容会补齐到本次记录。" else if (state.rosterLocked) "本轮 ${state.participants.size} 人，全部提交后一起展示。" else "已加入 ${state.participants.size} 人，可先准备图片。首次提交后停止加入，至少两人参加。" else "双方均提交后，才会互相展示。", style = MaterialTheme.typography.bodySmall)
         } else {
             OutlinedButton(onClick = { store.retryArchive() }, enabled = state.received != null || (state.mode == "friends" && state.connected)) { Text("重试保存到时间轴") }
             Text("我的此刻", style = MaterialTheme.typography.titleMedium)
@@ -574,7 +574,8 @@ class MainActivity : ComponentActivity() {
                 Picture(bytes, Modifier.fillMaxWidth().height(280.dp).clickable { onImage(bytes) })
             } ?: Text("正在接收图片…")
         }
-        if (!incoming) TextButton(onClick = onEnd) { Text(if (state.phase == "complete") "结束并清理" else "取消本轮") }
+        TextButton(onClick = { store.parkRound() }) { Text(if (state.submitted) "返回主页，等待好友" else "稍后继续记录") }
+        if (!incoming && (!state.asynchronous || state.initiator)) TextButton(onClick = onEnd) { Text(if (state.phase == "complete") "结束并清理" else "取消本轮") }
     }
     @Composable private fun Countdown(deadline: Long, label: String) {
         var remaining by remember(deadline) { mutableLongStateOf(0) }

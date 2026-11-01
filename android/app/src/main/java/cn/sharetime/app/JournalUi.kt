@@ -78,7 +78,8 @@ import java.util.Locale
         Text("一张照片，一段当下。\n平凡的日子，也值得被记住。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Button(onClick = onInvite, enabled = state.connected,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp), shape = RoundedCornerShape(18.dp)) { Text("一起记录") }
+            modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp), shape = RoundedCornerShape(18.dp)) { Text(if (state.round.isNotBlank()) "返回进行中的记录" else "一起记录") }
+        if (state.round.isNotBlank()) Text(if (state.submitted) "你已提交，服务器继续等待好友。" else "服务器保留着进行中的记录，可稍后继续。", style = MaterialTheme.typography.bodySmall)
     } else Text("我们的时间轴", style = MaterialTheme.typography.headlineLarge)
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .55f))
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

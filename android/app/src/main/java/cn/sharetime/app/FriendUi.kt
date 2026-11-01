@@ -39,9 +39,10 @@ import org.json.JSONObject
 
 @Composable fun FriendWaiting(state: UiState, store: Store) {
     Text("一起记录此刻", style = MaterialTheme.typography.headlineSmall)
-    Text("发起人已经开始记录，你可以现在加入。首次图片提交后停止加入，未加入的好友不会阻塞本轮。")
+    Text(if (state.asynchronous) "发起人已经开始记录，你可以现在加入。本轮最多等待 24 小时，你提交后也可返回主页。已提交成员的图片会逐步补齐。" else "群组发来邀请，由你决定是否参加。旧版记录在首次提交后停止加入。")
     Text("已加入 ${state.accepted.size} 人", style = MaterialTheme.typography.titleMedium)
     state.groupMembers.filter { it.id in state.accepted }.forEach { Text(it.name) }
     Button(onClick = { store.respond(true) }, enabled = state.connected, modifier = Modifier.fillMaxWidth()) { Text("加入并记录") }
     TextButton(onClick = { store.respond(false) }, enabled = state.connected) { Text("本轮暂不参加") }
+    TextButton(onClick = { store.parkRound() }) { Text("返回主页，稍后再决定") }
 }

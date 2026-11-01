@@ -121,15 +121,16 @@ class JournalStorage(context: Context) {
     @Synchronized fun discardPending(id: String) {
         if (id.isNotBlank()) AtomicFile(File(directory, "pending-${recordFile(id).name}")).delete()
     }
-    @Synchronized fun add(id: String, mine: ByteArray?, peer: ByteArray, name: String, others: List<LocalPhoto> = emptyList(), mode: String = "duo"): Pair<JournalEntry, Int> {
+    @Synchronized fun add(id: String, mine: ByteArray?, peer: ByteArray, name: String, others: List<LocalPhoto> = emptyList(), mode: String = "duo", replace: Boolean = false): Pair<JournalEntry, Int> {
         val existing = entries()
-        existing.firstOrNull { it.id == id }?.let { return it to 0 }
+        val previous = existing.firstOrNull { it.id == id }
+        if (previous != null && !replace) return previous to 0
         val actualMine = mine ?: pending(id) ?: runCatching { load(id).mine }.getOrNull()
-        val time = System.currentTimeMillis()
-        val day = JournalDates.day(time).toString()
+        val time = previous?.time ?: System.currentTimeMillis()
+        val day = previous?.day ?: JournalDates.day(time).toString()
         val data = readIndex()
         val counts = data.optJSONObject("counts") ?: JSONObject()
-        val ordinal = maxOf(counts.optInt(day, 0) + 1, JournalDates.ordinal(existing, day))
+        val ordinal = previous?.ordinal ?: maxOf(counts.optInt(day, 0) + 1, JournalDates.ordinal(existing, day))
         val saved = JournalEntry(id, time, day, name, ordinal, mode, (if (actualMine != null) listOf("我", name) else listOf(name)) + others.map { it.name }, 1 + (if (actualMine != null) 1 else 0) + others.size)
         val body = metadata(saved).put("mine", actualMine?.let(Crypto::encode)).put("peer", Crypto.encode(peer))
             .put("others", JSONArray().apply { others.forEach { put(JSONObject().put("name", it.name).put("bytes", Crypto.encode(it.bytes))) } })
@@ -138,11 +139,11 @@ class JournalStorage(context: Context) {
         write(target, encoded)
         // Confirm durable ciphertext can be authenticated before indexing or acknowledging it.
         check(read(target).contentEquals(encoded)) { "Journal read-back failed" }
-        val updated = JSONArray().apply { (existing + saved).forEach { put(metadata(it)) } }
-        counts.put(day, ordinal)
+        val updated = JSONArray().apply { (existing.filter { it.id != id } + saved).forEach { put(metadata(it)) } }
+        counts.put(day, maxOf(ordinal, counts.optInt(day, 0)))
         write(index, data.put("entries", updated).put("counts", counts).toString().toByteArray(Charsets.UTF_8))
         AtomicFile(File(directory, "pending-${recordFile(id).name}")).delete()
-        return saved to ordinal
+        return saved to if (previous == null) ordinal else 0
     }
     @Synchronized fun load(id: String): JournalRecord {
         val obj = JSONObject(String(read(recordFile(id)), Charsets.UTF_8))

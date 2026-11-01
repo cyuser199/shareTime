@@ -12,6 +12,7 @@ import androidx.exifinterface.media.ExifInterface
 import androidx.core.net.toUri
 import androidx.core.graphics.scale
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -37,7 +38,8 @@ data class GroupMember(val id: String, val name: String, val key: String, val on
 data class UiState(
     val mode: String = "duo", val groupMembers: List<GroupMember> = emptyList(),
     val accepted: List<String> = emptyList(), val participants: List<String> = emptyList(), val me: String = "",
-    val groupCode: String = "", val groupCodeUntil: Long = 0, val joinedRound: Boolean = false, val rosterLocked: Boolean = false,
+    val groupCode: String = "", val groupCodeUntil: Long = 0, val joinedRound: Boolean = false, val rosterLocked: Boolean = false, val asynchronous: Boolean = false, val parked: Boolean = false,
+    val recipients: List<String> = emptyList(),
     val url: String = "https://cyadmin.xyz/sharetime", val name: String = "", val registered: Boolean = false,
     val connected: Boolean = false, val paired: Boolean = false, val peerName: String = "好友",
     val pairingStatus: String = "", val online: Boolean = false, val code: String = "", val codeUntil: Long = 0,
@@ -81,6 +83,7 @@ class Store(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val vault = Vault(context)
     private val journal = JournalStorage(context)
+    private val deletedRecords = context.getSharedPreferences("deleted-records", Context.MODE_PRIVATE)
     private var credentials = vault.read().also {
         if (it.optString("url") == "https://192.168.1.191:8443") {
             it.put("url", "https://cyadmin.xyz/sharetime")
@@ -97,6 +100,7 @@ class Store(private val context: Context) {
     private val http = OkHttpClient.Builder().connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS).build()
     @Volatile private var socket: WebSocket? = null
+    private val inbound = Channel<Pair<WebSocket, JSONObject>>(8)
     private var reconnect: Job? = null
     private var heartbeat: Job? = null
     @Volatile private var lastServerReply = 0L
@@ -112,6 +116,13 @@ class Store(private val context: Context) {
 
     init {
         scope.launch {
+            for ((ws, event) in inbound) {
+                if (socket !== ws) continue
+                try { handle(event) }
+                catch (_: Exception) { message("消息处理失败，请重新连接后重试") }
+            }
+        }
+        scope.launch {
             try { mutable.update { it.copy(history = journal.entries(), background = journal.background()) } }
             catch (_: Exception) { message("本机记录暂时无法读取，请保留应用数据后重试") }
         }
@@ -119,6 +130,9 @@ class Store(private val context: Context) {
         connectivity.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onAvailable(available: android.net.Network) = networkAvailable(available)
             override fun onLost(lost: android.net.Network) = networkLost(lost)
+            override fun onCapabilitiesChanged(available: android.net.Network, capabilities: android.net.NetworkCapabilities) {
+                if (available == network && capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) ensureConnected()
+            }
         })
     }
     fun message(text: String) { mutable.update { it.copy(message = text) } }
@@ -132,7 +146,12 @@ class Store(private val context: Context) {
         }
     }
     fun deleteEntry(id: String) { scope.launch {
-        try { journal.delete(id); mutable.update { it.copy(history = journal.entries()) }; message("已删除这台手机上的记录") }
+        try {
+            check(deletedRecords.edit().putBoolean(id, true).commit())
+            journal.delete(id); journal.discardPending(id)
+            mutable.update { it.copy(history = journal.entries(), preview = if (it.round == id) null else it.preview) }
+            message("已删除这台手机上的记录")
+        }
         catch (_: Exception) { message("删除失败，请重试") }
     } }
     fun resetBackground() { scope.launch {
@@ -151,6 +170,7 @@ class Store(private val context: Context) {
         }
         File(context.cacheDir, "capture").listFiles()?.forEach { it.delete() }
         command("ack", JSONObject().put("id", current.round))
+        if (!foreground) Notices.invitation(context, "共同记录已保存，点按查看")
     }
     fun retryArchive() { scope.launch {
         val current = state.value
@@ -209,7 +229,7 @@ class Store(private val context: Context) {
         backgroundClose?.cancel()
         backgroundClose = scope.launch {
             delay(30_000)
-            if (!state.value.keepReceiving && state.value.round.isBlank()) disconnect()
+            if (!state.value.keepReceiving && (state.value.round.isBlank() || state.value.parked)) disconnect()
         }
     }
     fun keepReceiving(enabled: Boolean) {
@@ -256,15 +276,19 @@ class Store(private val context: Context) {
                 }
                 ws.send(JSONObject().put("token", credentials.getString("token"))
                     .put("certificate", credentials.optString("certificate").ifBlank { null })
-                    .put("privacyVersion", Agreement.VERSION)
+                    .put("recordProtocol", 2).put("privacyVersion", Agreement.VERSION)
                     .put("deviceModel", listOf(android.os.Build.MANUFACTURER, android.os.Build.MODEL).distinct().joinToString(" ").take(80))
                     .put("mode", state.value.mode).put("pairingProtocol", 2).put("reservation", credentials.optString("reservation").ifBlank { null }).toString())
             }
             override fun onMessage(ws: WebSocket, text: String) {
                 if (socket !== ws) return
                 lastServerReply = android.os.SystemClock.elapsedRealtime()
-                try { handle(JSONObject(text)) }
-                catch (_: Exception) { message("消息处理失败，请结束本轮后重试") }
+                try {
+                    val event = JSONObject(text)
+                    // Heartbeats never wait behind image decrypting or local disk writes.
+                    if (event.optString("type") == "pong") return
+                    if (!inbound.trySend(ws to event).isSuccess) { ws.cancel(); lost(ws) }
+                } catch (_: Exception) { message("消息格式错误，请重新连接后重试") }
             }
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) = lost(ws)
             override fun onClosed(ws: WebSocket, code: Int, reason: String) = lost(ws)
@@ -309,16 +333,39 @@ class Store(private val context: Context) {
     }
     fun switchMode(mode: String) {
         if (mode !in listOf("duo", "friends") || mode == state.value.mode) return
-        if (state.value.round.isNotBlank()) { message("请先结束当前记录再切换模式"); return }
+        if (state.value.round.isNotBlank() && !(state.value.asynchronous && state.value.parked)) { message("请先返回主页，再切换模式"); return }
         disconnect()
         credentials.put("mode", mode); persist()
         peerKey = ""
         mutable.update { it.copy(mode = mode, paired = mode == "duo" && credentials.optString("certificate").isNotBlank(),
-            online = false, peerName = "好友", fingerprint = "", groupMembers = emptyList(), groupCode = "", pairingStatus = "") }
+            online = false, peerName = "好友", fingerprint = "", groupMembers = emptyList(), groupCode = "", pairingStatus = "",
+            round = "", phase = "", parked = false, asynchronous = false, submitted = false, peerSubmitted = false, preview = null, received = null, accepted = emptyList(), participants = emptyList()) }
         connect()
     }
     fun leaveGroup() { command("group_leave") }
-    fun invite() { command("invite") }
+    fun invite() {
+        if (state.value.round.isNotBlank()) { openRound(); return }
+        command("invite", JSONObject().put("async", true))
+    }
+    fun parkRound() {
+        val current = state.value
+        if (current.round.isBlank()) return
+        if (!current.submitted && current.preview != null) {
+            try { journal.savePending(current.round, current.preview) }
+            catch (_: Exception) { message("草稿暂存失败，请先重试保存再返回"); return }
+        }
+        credentials.put("parkedRound", current.round); persist()
+        mutable.update { it.copy(parked = true) }
+    }
+    fun openRound() {
+        credentials.remove("parkedRound"); persist()
+        mutable.update { it.copy(parked = false) }
+    }
+    fun ensureConnected() {
+        if (!Agreement.accepted(context) || !state.value.registered || (!wanted && !foreground)) return
+        if (socket == null) connect()
+        else if (state.value.connected && android.os.SystemClock.elapsedRealtime() - lastServerReply > 12_000) reconnectNow()
+    }
     fun respond(accept: Boolean) {
         Notices.dismiss(context)
         command("respond", JSONObject().put("id", state.value.round).put("accept", accept))
@@ -333,9 +380,9 @@ class Store(private val context: Context) {
         runCatching { journal.discardPending(state.value.round) }
         clearRound()
     }
-    private fun clearRound() {
-        Notices.dismiss(context)
-        mutable.update { it.copy(round = "", phase = "", preview = null, received = null,
+    private fun clearRound(preserveNotice: Boolean = false) {
+        if (!preserveNotice) Notices.dismiss(context)
+        mutable.update { it.copy(round = "", phase = "", parked = false, asynchronous = false, preview = null, received = null,
             submitted = false, peerSubmitted = false, busy = false) }
         File(context.cacheDir, "capture").listFiles()?.forEach { it.delete() }
     }
@@ -355,6 +402,7 @@ class Store(private val context: Context) {
     private fun handle(event: JSONObject) {
         when (event.getString("type")) {
             "group_state" -> {
+                if (event.has("activeRound") && event.isNull("activeRound") && state.value.round.isNotBlank()) clearRound()
                 retries = 0
                 val group = event.optJSONObject("group")
                 val members = group?.optJSONObject("members")
@@ -373,19 +421,29 @@ class Store(private val context: Context) {
                 val participants = event.getJSONArray("participants").let { a -> (0 until a.length()).map { a.getString(it) } }
                 val submitted = event.getJSONArray("submitted").let { a -> (0 until a.length()).map { a.getString(it) } }
                 val id = event.getString("id")
-                if (state.value.history.any { it.id == id }) { command("ack", JSONObject().put("id", id)); return }
+                val async = event.optBoolean("async")
+                val wasSubmitted = state.value.round == id && state.value.submitted
+                if (!async && state.value.history.any { it.id == id }) { command("ack", JSONObject().put("id", id)); return }
                 if (state.value.round != id) clearRound()
                 mutable.update { it.copy(round = id, phase = event.getString("phase"), accepted = accepted, participants = participants,
+                    asynchronous = async,
+                    recipients = event.optJSONArray("recipients")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: participants,
+                    parked = if (it.round == id) it.parked else credentials.optString("parkedRound") == id,
                     initiator = event.getString("initiator") == it.me, joinedRound = it.me in accepted, rosterLocked = event.optBoolean("locked"),
                     submitted = it.me in submitted, peerSubmitted = submitted.any { uid -> uid != it.me },
                     deadline = System.currentTimeMillis() + event.getInt("remaining") * 1000L, busy = false) }
-                if (state.value.preview == null && state.value.submitted) runCatching { journal.pending(id) }.getOrNull()?.let { bytes -> mutable.update { it.copy(preview = bytes) } }
+                if (state.value.asynchronous && state.value.submitted && !wasSubmitted) parkRound()
+                if (state.value.preview == null) runCatching { journal.pending(id) ?: if (state.value.history.any { it.id == id }) journal.load(id).mine else null }.getOrNull()?.let { bytes -> mutable.update { it.copy(preview = bytes) } }
                 if (!state.value.joinedRound && !event.optBoolean("locked") && lastNotified != id) {
                     lastNotified = id
                     if (!foreground) { Notices.invitation(context, "好友群组邀请你一起记录"); InviteOverlay.show(context, id) }
                 }
             }
+            "group_closed" -> { if (state.value.round == event.getString("id")) clearRound(preserveNotice = true) }
             "group_records" -> {
+                if (deletedRecords.getBoolean(event.getString("id"), false)) {
+                    command("ack", JSONObject().put("id", event.getString("id")).put("revision", event.optInt("revision"))); return
+                }
                 val current = state.value
                 if (current.round != event.getString("id")) return
                 try {
@@ -400,14 +458,17 @@ class Store(private val context: Context) {
                         LocalPhoto(member.name, bytes)
                     }
                     require(photos.isNotEmpty())
+                    val previousCount = current.history.firstOrNull { it.id == current.round }?.photoCount ?: 0
                     val (entry, ordinal) = journal.add(current.round, current.preview, photos.first().bytes,
-                        photos.first().name, photos.drop(1), "friends")
-                    clearRound()
-                    mutable.update { it.copy(history = journal.entries(), newEntryId = entry.id, completionOrdinal = ordinal) }
-                    command("ack", JSONObject().put("id", current.round))
+                        photos.first().name, photos.drop(1), "friends", replace = current.asynchronous)
+                    if (current.asynchronous && current.phase != "complete") { if (ordinal > 0) parkRound() } else clearRound()
+                    mutable.update { it.copy(history = journal.entries(), newEntryId = if (ordinal > 0) entry.id else it.newEntryId, completionOrdinal = if (ordinal > 0) ordinal else it.completionOrdinal) }
+                    command("ack", JSONObject().put("id", current.round).put("revision", event.optInt("revision")))
+                    if (!foreground && entry.photoCount > previousCount) Notices.invitation(context, if (ordinal > 0) "共同记录已保存，点按查看" else "好友已补交，记录内容已更新")
                 } catch (e: Exception) { android.util.Log.w("ShareTimeJournal", "Group save failed: " + e.javaClass.simpleName); message("群组记录保存失败，请重新连接后重试"); }
             }
             "state" -> {
+                if (event.has("activeRound") && event.isNull("activeRound") && state.value.round.isNotBlank()) clearRound()
                 retries = 0
                 if (event.optBoolean("paired") && credentials.optString("certificate").isBlank()) {
                     // A peer reconnecting with an old certificate cannot undo our local unpair.
@@ -449,18 +510,21 @@ class Store(private val context: Context) {
                 }
                 if (event.getString("phase") != "waiting") Notices.dismiss(context)
                 val id = event.getString("id")
+                val wasSubmitted = state.value.round == id && state.value.submitted
                 val list = event.getJSONArray("submitted")
                 val submitted = (0 until list.length()).map { list.getString(it) }
                 val me = credentials.getString("id")
                 mutable.update { old ->
-                    old.copy(round = id, phase = event.getString("phase"), initiator = event.getString("initiator") == me,
+                    old.copy(round = id, phase = event.getString("phase"), asynchronous = event.optBoolean("async"),
+                        parked = if (old.round == id) old.parked else credentials.optString("parkedRound") == id, initiator = event.getString("initiator") == me,
                         submitted = me in submitted, peerSubmitted = submitted.any { it != me }, busy = false,
                         deadline = System.currentTimeMillis() + event.getInt("remaining") * 1000L,
                         preview = if (id == old.round) old.preview else null,
                         received = if (id == old.round) old.received else null)
                 }
-                if (state.value.preview == null && state.value.submitted) runCatching { journal.pending(id) }.getOrNull()?.let { bytes -> mutable.update { it.copy(preview = bytes) } }
-                if (!state.value.joinedRound && !event.optBoolean("locked") && lastNotified != id) {
+                if (state.value.asynchronous && state.value.submitted && !wasSubmitted) parkRound()
+                if (state.value.preview == null) runCatching { journal.pending(id) ?: if (state.value.history.any { it.id == id }) journal.load(id).mine else null }.getOrNull()?.let { bytes -> mutable.update { it.copy(preview = bytes) } }
+                if (state.value.phase == "waiting" && !state.value.initiator && lastNotified != id) {
                     lastNotified = id
                     if (!foreground) {
                         Notices.invitation(context, "好友想和你一起记录此刻")
@@ -527,9 +591,15 @@ class Store(private val context: Context) {
                 val factor = minOf(1f, 1600f / maxOf(bitmap.width, bitmap.height))
                 val scaled = if (factor < 1) bitmap.scale((bitmap.width * factor).toInt().coerceAtLeast(1), (bitmap.height * factor).toInt().coerceAtLeast(1)) else bitmap
                 val stream = ByteArrayOutputStream()
-                scaled.compress(Bitmap.CompressFormat.JPEG, 85, stream)
-                val bytes = stream.toByteArray()
-                require(bytes.size <= 3 * 1024 * 1024)
+                var quality = 85
+                var bytes: ByteArray
+                do {
+                    stream.reset()
+                    scaled.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+                    bytes = stream.toByteArray()
+                    quality -= 10
+                } while (bytes.size > 2_800_000 && quality >= 35)
+                require(bytes.size <= 2_800_000)
                 if (background) {
                     journal.setBackground(bytes)
                     mutable.update { it.copy(background = bytes, busy = false) }
@@ -542,14 +612,14 @@ class Store(private val context: Context) {
     }
     fun submit() {
         val current = state.value
-        if (current.busy || current.submitted || current.phase != "active" || current.preview == null) return
+        if (current.busy || current.submitted || (current.phase != "active" && !(current.asynchronous && current.initiator && current.phase == "waiting")) || current.preview == null) return
         scope.launch {
             mutable.update { it.copy(busy = true) }
             try {
                 journal.savePending(current.round, current.preview)
                 if (current.mode == "friends") {
                     val bodies = JSONObject()
-                    current.groupMembers.filter { it.id != current.me && it.id in current.participants }.forEach {
+                    current.groupMembers.filter { it.id != current.me && it.id in (if (current.asynchronous) current.recipients else current.participants) }.forEach {
                         bodies.put(it.id, Crypto.encrypt(current.preview, Crypto.privateKey(credentials.getString("privateKey")), it.key, current.round))
                     }
                     command("submit", JSONObject().put("id", current.round).put("bodies", bodies))

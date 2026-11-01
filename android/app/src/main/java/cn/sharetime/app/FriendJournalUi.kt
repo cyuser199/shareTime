@@ -104,8 +104,8 @@ private fun trianglePositions(count: Int): List<PhotoPosition> = List(count) { i
     var layout by remember(id) { mutableStateOf(prefs.getString("$id-mode", "vertical") ?: "vertical") }
     var positions by remember(id, photos.size) { mutableStateOf(runCatching {
         val a = JSONArray(prefs.getString("$id-positions", "[]"))
-        require(a.length() == photos.size)
-        List(a.length()) { i -> a.getJSONObject(i).let { PhotoPosition(it.getDouble("x").toFloat().coerceIn(0f,1f), it.getDouble("y").toFloat().coerceIn(0f,1f), it.getDouble("size").toFloat().coerceIn(.28f,.85f)) } }
+        val defaults = trianglePositions(photos.size)
+        List(photos.size) { i -> if (i >= a.length()) defaults[i] else a.getJSONObject(i).let { PhotoPosition(it.getDouble("x").toFloat().coerceIn(0f,1f), it.getDouble("y").toFloat().coerceIn(0f,1f), it.getDouble("size").toFloat().coerceIn(.28f,.85f)) } }
     }.getOrElse { trianglePositions(photos.size) }) }
     var selected by remember(id) { mutableIntStateOf(0) }
     fun savePositions() {

@@ -5,6 +5,7 @@ import json
 import secrets
 import time
 from contextlib import suppress
+from starlette.websockets import WebSocketDisconnect
 
 
 class FriendGroups:
@@ -14,6 +15,7 @@ class FriendGroups:
         self.groups = json.loads(self.file.read_text(encoding='utf-8')) if self.file.exists() else {}
         self.connections = {}
         self.profiles = {}
+        self.protocols = {}
         self.rounds = {}
 
     def save(self):
@@ -28,12 +30,12 @@ class FriendGroups:
     async def send(self, uid, event):
         ws = self.connections.get(uid)
         if ws:
-            with suppress(RuntimeError, OSError, asyncio.TimeoutError):
+            with suppress(RuntimeError, OSError, asyncio.TimeoutError, WebSocketDisconnect):
                 await asyncio.wait_for(ws.send_json(event), 5)
 
     async def state(self, uid):
         group = self.group(uid)
-        await self.send(uid, {'type': 'group_state', 'group': group, 'online': [m for m in group['members'] if m in self.connections] if group else []})
+        await self.send(uid, {'type': 'group_state', 'group': group, 'online': [m for m in group['members'] if m in self.connections] if group else [], 'activeRound': self.rounds.get(group['id'], {}).get('id') if group else None})
         if group and group['id'] in self.rounds:
             record = self.rounds[group['id']]
             if record['expires'] <= time.monotonic():
@@ -44,21 +46,26 @@ class FriendGroups:
                 return
             await self.send(uid, {'type': 'group_round', **{k:record[k] for k in ['id','phase','initiator','accepted','participants','locked']},
                                   'eligible': record['eligible'], 'submitted': list(record['bodies']),
+                                  'async': record.get('async', False), 'recipients': record.get('recipients', record['participants']),
                                   'remaining': max(0, int(record['expires']-time.monotonic()))})
-            if record['phase'] == 'complete' and uid in record['participants']:
+            if record.get('async'):
+                revision = len(record['bodies'])
+                if uid in record['bodies'] and revision >= 2 and record['delivered'].get(uid, 0) < revision:
+                    await self.send(uid, {'type':'group_records','id':record['id'],'revision':revision,
+                        'records':[{'sender':m,'body':record['bodies'][m][uid]} for m in record['bodies'] if m != uid]})
+            elif record['phase'] == 'complete' and uid in record['participants']:
                 await self.send(uid, {'type': 'group_records', 'id': record['id'],
                                      'records': [{'sender': m, 'body': record['bodies'][m][uid]} for m in record['participants'] if m != uid]})
 
     async def broadcast(self, group):
-        for uid in list(group['members']):
-            await self.state(uid)
+        await asyncio.gather(*(self.state(uid) for uid in list(group['members'])))
 
-    async def end(self, group, reason):
+    async def end(self, group, reason, completed=False):
         record = self.rounds.pop(group['id'], None)
         if record:
             record['bodies'].clear()
             for uid in record['eligible']:
-                await self.send(uid, {'type': 'ended', 'reason': reason})
+                await self.send(uid, {'type': 'group_closed' if completed else 'ended', 'id':record['id'], 'reason': reason})
 
     async def sweep(self):
         changed = False
@@ -111,6 +118,8 @@ class FriendGroups:
                 if uid in current['participants'] or uid == current['initiator']:
                     await self.end(group, '参与成员退出，本轮已结束')
                 else:
+                    if current.get('async'):
+                        current['declined'].add(uid)
                     if uid in current['accepted']: current['accepted'].remove(uid)
                     if uid in current['eligible']: current['eligible'].remove(uid)
                     await self.send(uid, {'type':'ended','reason':'你已退出群组'})
@@ -123,15 +132,21 @@ class FriendGroups:
         if kind == 'invite':
             if group['id'] in self.rounds: raise ActionError('已有进行中的记录')
             eligible = list(group['members'])
+            if obj.get('async') and len(eligible) < 2: raise ActionError('请先邀请至少一位好友加入群组')
             if len(self.rounds) >= 100: raise ActionError('服务器繁忙')
             self.rounds[group['id']] = {'id':secrets.token_urlsafe(24), 'initiator':uid, 'phase':'active', 'locked':False,
                 'eligible':eligible, 'accepted':[uid], 'participants':[uid], 'expires':time.monotonic()+600, 'bodies':{}, 'acked':set()}
+            if obj.get('async'):
+                self.rounds[group['id']].update({'async':True,'recipients':eligible[:], 'declined':set(), 'delivered':{}, 'counted':set(), 'expires':time.monotonic()+86400})
             await self.broadcast(group)
             return
         r = self.rounds.get(group['id'])
         if not r or obj.get('id') != r['id'] or uid not in r['eligible']: raise ActionError('本轮已结束或你未受邀')
         if r['expires'] <= time.monotonic():
             await self.end(group, '本轮已超时')
+            return
+        if r.get('async'):
+            await self.handle_async(group, r, uid, obj)
             return
         if kind == 'respond':
             if r['phase'] != 'active' or r['locked'] or uid == r['initiator']: raise ActionError('本轮已锁定，不能再加入')
@@ -157,7 +172,7 @@ class FriendGroups:
                 if not isinstance(body,str) or not 40 <= len(body) <= MAX_BODY: raise ActionError('无效图片')
                 try: base64.b64decode(body,validate=True)
                 except ValueError: raise ActionError('无效密文') from None
-            used = sum(len(body) for record in self.rounds.values() for payload in record['bodies'].values() for body in payload.values())
+            used = sum(len(body) for record in self.rounds.values() for payload in record['bodies'].values() for body in payload.values()) + sum(len(body) for record in self.relay.rounds.values() for body in record['bodies'].values())
             if used + sum(map(len, bodies.values())) > 128 * 1024 * 1024: raise ActionError('中转空间暂满，请稍后重试')
             if not r['locked']:
                 r['locked'] = True
@@ -192,7 +207,7 @@ class FriendGroups:
         group['code'],group['codeUntil'] = code, int((time.time()+3*86400)*1000)
         self.save()
 
-    async def connect(self, ws, device, profile=None):
+    async def connect(self, ws, device, profile=None, protocol=1):
         from app import ActionError, MAX_BODY
         uid = device['id']
         try:
@@ -200,13 +215,14 @@ class FriendGroups:
                 if uid in self.connections: await self.connections[uid].close(code=4001)
                 if len(self.connections) >= 200: raise ActionError('服务器繁忙')
                 self.connections[uid]=ws
+                self.protocols[uid] = protocol
                 self.profiles[uid] = profile or device
                 self.relay.metrics.refresh({uid: self.profiles[uid]})
                 group=self.group(uid)
                 if group: await self.broadcast(group)
                 else: await self.state(uid)
             while True:
-                raw=await asyncio.wait_for(ws.receive_text(),90)
+                raw=await asyncio.wait_for(ws.receive_text(),15)
                 if len(raw)>MAX_BODY*4+4096: raise ValueError('Payload too large')
                 try:
                     obj=json.loads(raw)
@@ -219,5 +235,68 @@ class FriendGroups:
                 if self.connections.get(uid) is ws:
                     self.connections.pop(uid,None)
                     self.profiles.pop(uid,None)
+                    self.protocols.pop(uid,None)
                     group=self.group(uid)
                     if group: await self.broadcast(group)
+
+
+    async def handle_async(self, group, r, uid, obj):
+        from app import ActionError, MAX_BODY
+        kind = obj.get('type')
+        if kind in ('respond', 'submit') and self.protocols.get(uid, 1) < 2:
+            raise ActionError('本轮支持稍后加入，请先更新客户端')
+        if kind == 'respond':
+            if r['phase'] != 'active' or uid in r['bodies']:
+                raise ActionError('本轮已结束或你已提交')
+            if obj.get('accept'):
+                if uid not in r['accepted']: r['accepted'].append(uid)
+                if uid not in r['participants']: r['participants'].append(uid)
+            else:
+                r['declined'].add(uid)
+                if uid in r['accepted']: r['accepted'].remove(uid)
+                if uid in r['participants']: r['participants'].remove(uid)
+                r['eligible'].remove(uid)
+                await self.send(uid, {'type':'ended','reason':'你已选择不参加本轮'})
+        elif kind == 'submit':
+            if r['phase'] != 'active' or uid not in r['accepted'] or uid in r['bodies']:
+                raise ActionError('当前不能提交')
+            bodies = obj.get('bodies')
+            if not isinstance(bodies, dict) or set(bodies) != set(r['recipients']) - {uid}:
+                raise ActionError('收件人不正确，请刷新本轮后重试')
+            for body in bodies.values():
+                if not isinstance(body,str) or not 40 <= len(body) <= MAX_BODY: raise ActionError('无效图片')
+                try: base64.b64decode(body,validate=True)
+                except ValueError: raise ActionError('无效密文') from None
+            used = sum(len(body) for record in self.rounds.values() for payload in record['bodies'].values() for body in payload.values()) + sum(len(body) for record in self.relay.rounds.values() for body in record['bodies'].values())
+            if used + sum(map(len, bodies.values())) > 128 * 1024 * 1024: raise ActionError('中转空间暂满，请稍后重试')
+            r['bodies'][uid] = bodies
+        elif kind == 'ack':
+            revision = obj.get('revision', 0)
+            if uid in r['bodies'] and isinstance(revision,int) and 2 <= revision <= len(r['bodies']):
+                r['delivered'][uid] = max(r['delivered'].get(uid,0), revision)
+        elif kind == 'group_retry':
+            r['delivered'].pop(uid,None)
+        elif kind == 'cancel':
+            if uid != r['initiator']: raise ActionError('只有发起人可以结束整轮；提交后可返回主页')
+            await self.end(group,'发起人结束了本轮记录')
+            return
+        elif kind != 'group_start':
+            raise ActionError('不支持的操作')
+        if len(r['recipients']) - len(r['declined']) < 2:
+            await self.end(group,'其他成员未参加，本轮已结束')
+            return
+        if len(r['bodies']) >= 2:
+            new = set(r['bodies']) - r['counted']
+            if not r['counted']:
+                self.relay.metrics.completed({m: group['members'][m] for m in r['bodies']})
+            elif new:
+                self.relay.metrics.participated({m: group['members'][m] for m in new})
+            r['counted'].update(new)
+            if set(r['bodies']) | r['declined'] == set(r['recipients']):
+                r['phase'] = 'complete'
+        revision = len(r['bodies'])
+        if r['phase'] == 'complete' and all(r['delivered'].get(m,0) >= revision for m in r['bodies']):
+            await self.end(group,'本轮记录已完成，内容已送达', completed=True)
+            return
+        if kind == 'group_retry': await self.state(uid)
+        elif kind != 'ack': await self.broadcast(group)

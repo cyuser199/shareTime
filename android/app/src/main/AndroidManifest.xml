@@ -30,7 +30,7 @@
         <receiver android:name=".ReceiveRestoreReceiver" android:exported="false">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /><action android:name="android.intent.action.MY_PACKAGE_REPLACED" /></intent-filter>
         </receiver>
-        <service android:name=".ReceiveService" android:exported="false" android:foregroundServiceType="specialUse">
+        <service android:name=".ReceiveService" android:stopWithTask="false" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled persistent encrypted connection for receiving paired friend invitations without a cloud push provider" />
         </service>
         <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="mediaProjection" />

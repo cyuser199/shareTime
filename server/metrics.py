@@ -67,6 +67,12 @@ class DailyMetrics:
             self.data['users'][self.tag(uid)]['records'] += 1
         self.save()
 
+    def participated(self, participants):
+        self.refresh(participants)
+        for uid in set(participants):
+            self.data['users'][self.tag(uid)]['records'] += 1
+        self.save()
+
     def save(self):
         temporary = self.file.with_suffix('.tmp')
         temporary.write_text(json.dumps(self.data), encoding='utf-8')
