@@ -1,10 +1,58 @@
 import asyncio
 import json
 import time
+import pytest
 from fastapi.testclient import TestClient
 from app import create_app, Relay
 from push import PushRegistry
 from test_app import identity
+
+
+@pytest.mark.parametrize('content', ['{invalid', '[]', '{"device":{"token":null,"expires":"bad"}}'])
+def test_broken_push_registry_does_not_break_core_service_or_overwrite_file(tmp_path, content):
+    file = tmp_path / 'push-devices.json'
+    file.write_text(content)
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        assert client.get('/health').status_code == 200
+        assert client.get('/push/config').json()['enabled'] is False
+        device = identity(client)
+        response = client.post('/push/device', headers={'Authorization': 'Bearer ' + device['token']},
+            json={'provider': 'fcm', 'pushToken': 'synthetic-token' * 8, 'privacyVersion': 8})
+        assert response.status_code == 503
+    assert file.read_text() == content
+
+
+@pytest.mark.parametrize('enabled', ['0', '1'])
+def test_missing_fcm_credentials_only_disables_push(tmp_path, monkeypatch, enabled):
+    monkeypatch.setenv('SHARETIME_FCM_CREDENTIALS', str(tmp_path / 'missing.json'))
+    monkeypatch.setenv('SHARETIME_FCM_ENABLED', enabled)
+    with TestClient(create_app(tmp_path)) as client:
+        assert client.get('/health').status_code == 200
+        assert client.get('/push/config').json()['enabled'] is False
+
+
+def test_oauth_refresh_has_a_network_timeout(tmp_path, monkeypatch):
+    import google.auth.transport.requests
+    import httpx
+    timeouts = []
+    class Credentials:
+        valid = False
+        token = 'synthetic-access-token'
+        def refresh(self, request): request(url='https://oauth2.googleapis.com/token')
+    class Request:
+        def __call__(self, **kwargs): timeouts.append(kwargs['timeout'])
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def post(self, *args, **kwargs): return httpx.Response(200)
+    monkeypatch.setattr(google.auth.transport.requests, 'Request', Request)
+    monkeypatch.setattr(httpx, 'Client', Client)
+    p = PushRegistry(tmp_path)
+    p.credentials = Credentials(); p.project = 'synthetic-project'
+    assert p.send('synthetic-token', ('uid', 'invite', 'round', 0, 'duo')) == 'sent'
+    assert timeouts == [10]
 
 
 def test_registration_auth_consent_token_rotation_and_delete(tmp_path):
