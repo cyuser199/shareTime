@@ -45,7 +45,10 @@ class PairingRegistry:
             claim = self.relay.verify(ticket, 'reservation')
             if claim['uid'] != uid or claim['code'] != code:
                 raise ActionError('无效配对登记')
-            expires = min(expires, claim['expires'])
+            # A fixed code outlives a reservation. Reopening an authenticated
+            # device after the old reservation expired starts a new 3-day window.
+            if claim['expires'] > time.time():
+                expires = min(expires, claim['expires'])
         if not self.relay.pair_for(uid) and expires > time.time():
             old = self.data['codes'].get(code)
             if old and old['device']['id'] != uid:
@@ -65,12 +68,33 @@ class PairingRegistry:
         self.clean()
         relay = self.relay
         uid = device['id']
-        if relay.pair_for(uid) or relay.limited('fixed-join:' + uid, 6):
-            raise ActionError('已有配对，或尝试次数过多')
+        if relay.pair_for(uid):
+            raise ActionError('你已配对，请先解除现有配对')
+        if relay.limited('fixed-join:' + uid, 6):
+            raise ActionError('尝试次数过多，请一分钟后重试')
+        if not isinstance(code, str) or len(code) != 8 or not code.isascii() or not code.isdigit():
+            raise ActionError('请输入完整的 8 位数字配对码')
+        if code == self.code(device):
+            raise ActionError('不能使用自己的配对码，请输入好友的配对码')
         owner = self.data['codes'].get(code) if isinstance(code, str) else None
+        # A continuously connected owner may have crossed the 3-day deadline
+        # without reconnecting. Only an online signed identity can renew it.
+        if not owner:
+            for connection in list(relay.connections.values()):
+                candidate = connection['device']
+                if self.code(candidate) != code: continue
+                if relay.pair_for(candidate['id']): raise ActionError('对方已配对')
+                await self.reserve(candidate, renew=True)
+                owner = self.data['codes'].get(code)
+                break
+        if not owner:
+            raise ActionError('配对码未登记或登记已过期，请对方打开应用重新登记原码，并确认双方使用同一服务器')
         guest = self.data['codes'].get(self.code(device))
-        if not owner or not guest or owner['device']['id'] == uid:
-            raise ActionError('配对码未登记或登记已过期，请对方重新登记原码')
+        if not guest:
+            await self.reserve(device, renew=True)
+            guest = self.data['codes'].get(self.code(device))
+        if not guest:
+            raise ActionError('你的配对码登记未完成，请重新连接后再试')
         if relay.pair_for(owner['device']['id']):
             raise ActionError('对方已配对')
         # One outgoing request per guest; repeating it is idempotent.

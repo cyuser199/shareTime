@@ -67,7 +67,7 @@ def test_offline_request_and_certificate_survive_restart(tmp_path):
     asyncio.run(scenario())
 
 
-def test_expiry_requires_explicit_renew_and_keeps_code(tmp_path, monkeypatch):
+def test_expired_ticket_renews_on_reconnect_and_keeps_code(tmp_path, monkeypatch):
     now = [1000000.0]
     monkeypatch.setattr('pairing.time.time', lambda: now[0])
     async def scenario():
@@ -77,12 +77,65 @@ def test_expiry_requires_explicit_renew_and_keeps_code(tmp_path, monkeypatch):
         original = sa.events[-1]
         now[0] += TTL + 1
         await relay.registry.reconnect(a, original['ticket'])
-        assert not relay.registry.data['codes']
+        assert relay.registry.data['codes'][original['code']]['expires'] == now[0] + TTL
         assert sa.events[-1]['code'] == original['code']
         await relay.handle(a, {'type': 'reserve_fixed'})
         assert sa.events[-1]['code'] == original['code']
         assert relay.registry.data['codes'][original['code']]['expires'] == now[0] + TTL
         assert Relay(tmp_path).registry.code(a) == original['code']
+    asyncio.run(scenario())
+
+
+def test_join_renews_expired_sender_and_online_owner(tmp_path, monkeypatch):
+    now = [1000000.0]
+    monkeypatch.setattr('pairing.time.time', lambda: now[0])
+    async def scenario():
+        relay = Relay(tmp_path)
+        a, _ = online(relay, 'a')
+        b, _ = online(relay, 'b')
+        await relay.registry.reserve(a)
+        await relay.registry.reserve(b)
+        code_a, code_b = relay.registry.code(a), relay.registry.code(b)
+        now[0] += TTL + 1
+        await relay.registry.join(b, code_a)
+        assert relay.pair_for('a') == relay.pair_for('b')
+        assert relay.registry.code(a) == code_a and relay.registry.code(b) == code_b
+    asyncio.run(scenario())
+
+
+def test_join_renews_expired_sender_without_extending_offline_owner(tmp_path, monkeypatch):
+    now = [1000000.0]
+    monkeypatch.setattr('pairing.time.time', lambda: now[0])
+    async def scenario():
+        relay = Relay(tmp_path)
+        a, _ = online(relay, 'a')
+        b, _ = online(relay, 'b')
+        await relay.registry.reserve(b)
+        now[0] += TTL - 5
+        await relay.registry.reserve(a)
+        owner_expires = relay.registry.data['codes'][relay.registry.code(a)]['expires']
+        relay.connections.pop('a')
+        now[0] += 10
+        await relay.registry.join(b, relay.registry.code(a))
+        assert relay.registry.data['pending']['b']['expires'] == owner_expires
+        now[0] = owner_expires + 1
+        with pytest.raises(ActionError, match='请对方打开应用'):
+            await relay.registry.join(b, relay.registry.code(a))
+        assert not relay.registry.data['pending']
+    asyncio.run(scenario())
+
+
+def test_live_reservation_does_not_extend_on_reconnect(tmp_path, monkeypatch):
+    now = [1000000.0]
+    monkeypatch.setattr('pairing.time.time', lambda: now[0])
+    async def scenario():
+        relay = Relay(tmp_path)
+        a, socket = online(relay, 'a')
+        await relay.registry.reserve(a)
+        original = socket.events[-1]
+        now[0] += 60
+        await relay.registry.reconnect(a, original['ticket'])
+        assert socket.events[-1]['expiresAt'] == original['expiresAt']
     asyncio.run(scenario())
 
 
