@@ -5,6 +5,9 @@ import pytest
 
 from app import Relay, ActionError
 from pairing import TTL
+from fastapi.testclient import TestClient
+from app import create_app
+from test_app import identity, receive
 
 
 class Socket:
@@ -156,3 +159,37 @@ def test_cancel_and_self_pair_rejected(tmp_path):
         await relay.registry.reconnect(a, sa.events[0]['ticket'])
         assert not relay.pairs
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('expired', [('a',), ('b',), ('a', 'b')])
+def test_websocket_fixed_pairing_recovers_expired_online_registrations(tmp_path, expired):
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        people = {name: identity(client, name) for name in ('a', 'b')}
+        with client.websocket_connect('/connect') as a, client.websocket_connect('/connect') as b:
+            codes = {}
+            for name, socket in [('a', a), ('b', b)]:
+                socket.send_json({'token': people[name]['token'], 'pairingProtocol': 2})
+                codes[name] = receive(socket, 'fixed_code')['code']
+                assert receive(socket, 'state')['paired'] is False
+            for name in expired:
+                app.state.relay.registry.data['codes'][codes[name]]['expires'] = 0
+            b.send_json({'type': 'join_fixed', 'code': codes['a']})
+            assert receive(a, 'paired')['certificate'] == receive(b, 'paired')['certificate']
+            assert receive(a, 'state')['paired'] is True
+            assert receive(b, 'state')['paired'] is True
+
+
+def test_websocket_expired_reservation_ticket_reregisters_same_code(tmp_path):
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        device = identity(client)
+        relay = app.state.relay
+        owner = relay.verify(device['token'], 'device')
+        code = relay.registry.code(owner)
+        ticket = relay.sign({'kind': 'reservation', 'uid': device['id'], 'code': code, 'expires': 0})
+        with client.websocket_connect('/connect') as socket:
+            socket.send_json({'token': device['token'], 'pairingProtocol': 2, 'reservation': ticket})
+            event = receive(socket, 'fixed_code')
+            assert event['code'] == code and event['expiresAt'] > 0
+            assert receive(socket, 'state')['paired'] is False
